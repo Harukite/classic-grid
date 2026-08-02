@@ -1,29 +1,23 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="360" viewBox="0 0 960 360">
   <rect width="960" height="360" fill="#0d1117"/>
-  <text x="32" y="40" fill="#e6edf3" font-family="Segoe UI, sans-serif" font-size="22" font-weight="700">Grid ladder · buy below / sell above</text>
-  <text x="32" y="64" fill="#8b949e" font-family="Segoe UI, sans-serif" font-size="13">Horizontal axis = price · gap around mid is expected (not a missing order bug)</text>
-
-  <!-- axis -->
+  <text x="32" y="40" fill="#e6edf3" font-family="Arial, sans-serif" font-size="22" font-weight="700">Grid ladder - buy below / sell above</text>
+  <text x="32" y="64" fill="#8b949e" font-family="Arial, sans-serif" font-size="13">X axis = price ; gap around mid is expected (not a missing-order bug)</text>
   <line x1="80" y1="200" x2="880" y2="200" stroke="#30363d" stroke-width="2"/>
-  <!-- buy ticks -->
   <g stroke="#3fb950" stroke-width="3">
     <line x1="120" y1="160" x2="120" y2="200"/><line x1="170" y1="160" x2="170" y2="200"/>
     <line x1="220" y1="160" x2="220" y2="200"/><line x1="270" y1="160" x2="270" y2="200"/>
     <line x1="320" y1="160" x2="320" y2="200"/><line x1="370" y1="160" x2="370" y2="200"/>
     <line x1="420" y1="160" x2="420" y2="200"/>
   </g>
-  <!-- mid -->
   <line x1="480" y1="120" x2="480" y2="240" stroke="#ffd666" stroke-width="3"/>
-  <text x="480" y="110" text-anchor="middle" fill="#ffd666" font-family="Segoe UI, sans-serif" font-size="13">mid</text>
-  <!-- sell ticks -->
+  <text x="480" y="110" text-anchor="middle" fill="#ffd666" font-family="Arial, sans-serif" font-size="13">mid</text>
   <g stroke="#f85149" stroke-width="3">
     <line x1="540" y1="160" x2="540" y2="200"/><line x1="590" y1="160" x2="590" y2="200"/>
     <line x1="640" y1="160" x2="640" y2="200"/><line x1="690" y1="160" x2="690" y2="200"/>
     <line x1="740" y1="160" x2="740" y2="200"/><line x1="790" y1="160" x2="790" y2="200"/>
     <line x1="840" y1="160" x2="840" y2="200"/>
   </g>
-
-  <text x="270" y="280" text-anchor="middle" fill="#3fb950" font-family="Segoe UI, sans-serif" font-size="14">BUY (below mid)</text>
-  <text x="690" y="280" text-anchor="middle" fill="#f85149" font-family="Segoe UI, sans-serif" font-size="14">SELL (above mid)</text>
-  <text x="480" y="320" text-anchor="middle" fill="#8b949e" font-family="Segoe UI, sans-serif" font-size="13">After a buy fill ’ place adjacent sell · after a sell fill ’ place adjacent buy</text>
+  <text x="270" y="280" text-anchor="middle" fill="#3fb950" font-family="Arial, sans-serif" font-size="14">BUY (below mid)</text>
+  <text x="690" y="280" text-anchor="middle" fill="#f85149" font-family="Arial, sans-serif" font-size="14">SELL (above mid)</text>
+  <text x="480" y="320" text-anchor="middle" fill="#8b949e" font-family="Arial, sans-serif" font-size="13">After buy fill -&gt; adjacent sell ; after sell fill -&gt; adjacent buy</text>
 </svg>

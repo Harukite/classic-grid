@@ -11,13 +11,9 @@
 > 开源模板，**不含私钥 / API Key / 服务器地址 / 真实账本**。  
 > 演示图均为脱敏示例数据。作者：[beibei030](https://github.com/beibei030)
 
-<p align="center">
-  <img src="docs/images/dashboard-ui.png" alt="Dashboard demo" width="900" />
-</p>
+![Dashboard demo](docs/images/dashboard-ui.png)
 
-<p align="center">
-  <img src="docs/images/architecture.svg" alt="Architecture" width="900" />
-</p>
+![Architecture](docs/images/architecture.png)
 
 ---
 
@@ -42,9 +38,7 @@
 - Telegram：开/平简报、整点总览（可选）
 - `SOFT_RESUME`：重启恢复锚点，避免误整表撤单
 
-<p align="center">
-  <img src="docs/images/grid-flow.svg" alt="Grid flow" width="900" />
-</p>
+![Grid flow](docs/images/grid-flow.png)
 
 ---
 
