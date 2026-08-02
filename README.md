@@ -13,8 +13,6 @@
 
 ![Dashboard demo](docs/images/dashboard-ui.png)
 
-![Architecture](docs/images/architecture.png)
-
 ---
 
 ## 注册链接
@@ -37,8 +35,6 @@
 - 官方量 / 费 / 平仓盈亏（节流拉取，避免内存爆）
 - Telegram：开/平简报、整点总览（可选）
 - `SOFT_RESUME`：重启恢复锚点，避免误整表撤单
-
-![Grid flow](docs/images/grid-flow.png)
 
 ---
 
