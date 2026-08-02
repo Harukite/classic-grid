@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Classic Grid · Demo Dashboard</title>
+  <style>
+    :root {
+      --bg:#0d1117; --panel:#161b22; --panel2:#1f2630; --border:#30363d;
+      --txt:#e6edf3; --mut:#8b949e; --green:#3fb950; --red:#f85149;
+      --yellow:#d29922; --blue:#58a6ff; --cyan:#39c5cf;
+    }
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:var(--bg);color:var(--txt);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;padding:20px}
+    h1{font-size:22px;font-weight:800}
+    .meta{color:var(--mut);font-size:12px;margin-top:4px}
+    .pill{display:inline-block;border:1px solid #238636;color:var(--green);border-radius:999px;padding:3px 10px;font-size:12px;margin-left:8px}
+    .section{margin:22px 0 10px;font-size:20px;font-weight:800}
+    .t1{color:var(--blue)}.t2{color:var(--green)}.t3{color:var(--yellow)}.t4{color:var(--cyan)}
+    .kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+    .kpi{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:14px}
+    .kpi label{display:block;color:var(--mut);font-size:12px;margin-bottom:6px}
+    .kpi .v{font-size:22px;font-weight:800}
+    .up{color:var(--green)}.down{color:var(--red)}
+    table{width:100%;border-collapse:collapse;background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-top:8px}
+    th,td{padding:9px 10px;border-bottom:1px solid var(--border);font-size:13px;text-align:left}
+    th{background:var(--panel2);color:var(--mut)}
+    .ladder{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:12px;margin-top:10px}
+    .rail{position:relative;height:44px;background:#0d1117;border:1px solid var(--border);border-radius:8px;margin-top:8px}
+    .tick{position:absolute;top:6px;width:3px;height:32px;background:var(--blue)}
+    .mid{position:absolute;top:0;bottom:0;width:3px;background:#ffd666}
+    .gap{position:absolute;top:8px;height:28px;background:rgba(210,153,34,.35);border:1px solid rgba(210,153,34,.7);border-radius:3px}
+    .axis{display:flex;justify-content:space-between;color:var(--mut);font-size:11px;margin-top:6px}
+    .badge{display:inline-block;background:#14351f;color:var(--green);border-radius:999px;padding:2px 8px;font-size:12px;font-weight:700}
+    .note{margin-top:16px;color:var(--mut);font-size:12px}
+  </style>
+</head>
+<body>
+  <h1>四所网格总看板 <span class="pill">DEMO · 脱敏示例</span></h1>
+  <p class="meta">示例数据 · 非真实账户 · Classic Grid 开源演示</p>
+
+  <p class="section t1">总览</p>
+  <section class="kpis">
+    <div class="kpi"><label>今日盈亏</label><div class="v up">+$128.40</div></div>
+    <div class="kpi"><label>总余额</label><div class="v">$3,280.00</div></div>
+    <div class="kpi"><label>今日成交量</label><div class="v">$96,420</div></div>
+    <div class="kpi"><label>今日手续费</label><div class="v">$8.62</div></div>
+    <div class="kpi"><label>挂单合计</label><div class="v">256</div></div>
+    <div class="kpi"><label>健康</label><div class="v up">4/4</div></div>
+  </section>
+
+  <p class="section t2">今日明细</p>
+  <table>
+    <thead><tr><th>交易所</th><th>成交量</th><th>手续费</th><th>平仓盈亏</th><th>成交笔</th></tr></thead>
+    <tbody>
+      <tr><td>● Extended</td><td>$28,100</td><td>$0.12</td><td class="up">+$16.20</td><td>42</td></tr>
+      <tr><td>● RISEx</td><td>$24,800</td><td>$3.10</td><td class="down">-$2.40</td><td>31</td></tr>
+      <tr><td>● Decibel</td><td>$22,400</td><td>$2.80</td><td class="up">+$4.10</td><td>28</td></tr>
+      <tr><td>● N1</td><td>$21,120</td><td>$2.60</td><td class="up">+$9.80</td><td>26</td></tr>
+    </tbody>
+  </table>
+
+  <p class="section t3">四所状态汇总</p>
+  <table>
+    <thead><tr><th>交易所</th><th>状态</th><th>方向</th><th>仓位(U)</th><th>挂单</th><th>mid</th><th>权益</th></tr></thead>
+    <tbody>
+      <tr><td>Extended</td><td><span class="badge">正常</span></td><td class="up">多</td><td>$2,410</td><td>80/80</td><td>64820.5</td><td>$830</td></tr>
+      <tr><td>RISEx</td><td><span class="badge">正常</span></td><td class="up">多</td><td>$2,980</td><td>46/46</td><td>64835.0</td><td>$825</td></tr>
+      <tr><td>Decibel</td><td><span class="badge">正常</span></td><td class="up">多</td><td>$1,020</td><td>65/65</td><td>64810.2</td><td>$792</td></tr>
+      <tr><td>N1</td><td><span class="badge">正常</span></td><td class="up">多</td><td>$2,260</td><td>65/65</td><td>64850.8</td><td>$821</td></tr>
+    </tbody>
+  </table>
+
+  <p class="section t4">挂单档位分布（示例）</p>
+  <div class="ladder">
+    <div style="display:flex;justify-content:space-between"><strong style="color:var(--blue)">● Extended</strong><span class="meta">均匀 · 均档 75.0 / 期望 75.0 · 80档</span></div>
+    <div class="rail" id="rail"></div>
+    <div class="axis"><span>61920</span><span>mid 64820</span><span>67920</span></div>
+  </div>
+  <p class="note">黄线=mid · 蓝线=挂单价 · mid 旁空隙为买卖分界（非漏单）。本页仅为仓库演示截图源，不含真实密钥与账户。</p>
+  <script>
+    const rail = document.getElementById('rail');
+    for (let i = 0; i < 80; i++) {
+      if (i === 40) continue; // mid gap
+      const t = document.createElement('span');
+      t.className = 'tick';
+      t.style.left = (i / 79 * 100) + '%';
+      rail.appendChild(t);
+    }
+    const mid = document.createElement('span');
+    mid.className = 'mid';
+    mid.style.left = '50%';
+    rail.appendChild(mid);
+  </script>
+</body>
+</html>
