@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0d1117" />
+  <title>五所网格总看板 · 8088</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --panel: #161b22;
+      --panel2: #1f2630;
+      --border: #30363d;
+      --txt: #e6edf3;
+      --mut: #8b949e;
+      --green: #3fb950;
+      --red: #f85149;
+      --yellow: #d29922;
+      --blue: #58a6ff;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--txt);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      line-height: 1.45;
+    }
+    header {
+      position: sticky; top: 0; z-index: 10;
+      background: rgba(13, 17, 23, 0.94);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 18px;
+      display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+    }
+    h1 { font-size: 20px; font-weight: 800; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--mut); display: inline-block; }
+    .dot.on { background: var(--green); box-shadow: 0 0 10px var(--green); }
+    .dot.off { background: var(--red); }
+    .meta { color: var(--mut); font-size: 12px; }
+    .pill {
+      border: 1px solid var(--border); border-radius: 999px;
+      padding: 4px 10px; font-size: 12px; background: var(--panel);
+    }
+    .pill.live { color: var(--green); border-color: #238636; }
+    .pill.dry { color: var(--yellow); border-color: #9e6a03; }
+    .pill.offok { color: var(--blue); border-color: #1f6feb; }
+    main { max-width: 1280px; margin: 0 auto; padding: 18px; }
+    .section-title {
+      margin: 28px 0 14px;
+      font-size: 22px;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+      line-height: 1.2;
+    }
+    .section-title.t-overview { color: #58a6ff; }
+    .section-title.t-today { color: #3fb950; }
+    .section-title.t-venues { color: #d29922; }
+    .section-title.t-cal { color: #39c5cf; }
+    .kpis { display: grid; grid-template-columns: repeat(3, minmax(140px, 1fr)); gap: 12px; }
+    .kpi, .alert {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    }
+    .kpi { padding: 16px; min-height: 96px; }
+    .kpi label { display: block; color: var(--mut); font-size: 12px; margin-bottom: 6px; }
+    .kpi .value {
+      font-size: 24px; font-weight: 800; font-variant-numeric: tabular-nums;
+      overflow-wrap: anywhere; word-break: break-all; min-height: 1.2em;
+    }
+    .kpi .value.up { color: var(--green); }
+    .kpi .value.down { color: var(--red); }
+    .sub { color: var(--mut); font-size: 12px; margin-top: 7px; }
+    .up { color: var(--green); }
+    .down { color: var(--red); }
+    .warn { color: var(--yellow); }
+    .alert {
+      display: none; padding: 12px 14px; margin-bottom: 14px;
+      border-color: #d2992255; color: #f2cc60; background: #2d250d;
+    }
+    .table {
+      width: 100%; border-collapse: collapse; background: var(--panel);
+      border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+    }
+    .table th, .table td {
+      padding: 10px; border-bottom: 1px solid var(--border);
+      text-align: left; font-size: 13px; white-space: nowrap;
+    }
+    .table th { color: var(--mut); font-weight: 600; background: var(--panel2); }
+    .table tr:last-child td { border-bottom: 0; }
+    .scroll { overflow-x: auto; }
+    .badge {
+      display: inline-block; border-radius: 999px; padding: 3px 8px;
+      font-size: 12px; font-weight: 700;
+    }
+    .badge.ok { background: #14351f; color: var(--green); }
+    .badge.busy { background: #332a12; color: var(--yellow); }
+    .badge.down { background: #3a1618; color: var(--red); }
+    .ladders {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+      margin-top: 8px;
+    }
+    .ladder {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px 16px;
+    }
+    .ladder-head {
+      display: flex; flex-wrap: wrap; gap: 8px 16px;
+      align-items: baseline; justify-content: space-between;
+      font-size: 13px;
+    }
+    .ladder-head .name { font-weight: 800; font-size: 15px; }
+    .ladder-head .stat { color: var(--mut); font-variant-numeric: tabular-nums; }
+    .ladder-head .stat.bad { color: var(--yellow); font-weight: 700; }
+    .ladder-head .stat.ok { color: var(--green); }
+    .ladder-rail {
+      position: relative;
+      height: 52px;
+      margin-top: 12px;
+      border-radius: 8px;
+      background: #0d1117;
+      border: 1px solid var(--border);
+      overflow: visible;
+    }
+    .ladder-gap {
+      position: absolute;
+      top: 10px;
+      height: 32px;
+      background: rgba(210, 153, 34, 0.35);
+      border: 1px solid rgba(210, 153, 34, 0.7);
+      border-radius: 3px;
+      z-index: 1;
+    }
+    .ladder-tick {
+      position: absolute;
+      top: 8px;
+      width: 3px;
+      height: 36px;
+      border-radius: 1px;
+      background: var(--blue);
+      z-index: 2;
+    }
+    .ladder-mid {
+      position: absolute;
+      top: 0; bottom: 0;
+      width: 3px;
+      margin-left: -1px;
+      background: #ffd666;
+      box-shadow: 0 0 8px rgba(255, 214, 102, 0.7);
+      z-index: 3;
+    }
+    .ladder-axis {
+      display: flex; justify-content: space-between;
+      margin-top: 8px; color: var(--mut); font-size: 11px;
+      font-variant-numeric: tabular-nums;
+    }
+    .ladder-hint { color: var(--mut); font-size: 11px; margin-top: 4px; }
+    .ladder-empty { color: var(--mut); font-size: 12px; padding: 10px 0 2px; }
+    .section-title.t-ladder { color: #a371f7; margin-top: 18px; }
+    @media (max-width: 900px) {
+      .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 520px) {
+      .kpis { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <span id="dot" class="dot"></span>
+    <h1>五所网格总看板</h1>
+    <span id="mode" class="pill dry">…</span>
+    <span id="offPill" class="pill">数据…</span>
+    <span id="time" class="meta">等待数据</span>
+  </header>
+  <main>
+    <div id="alert" class="alert"></div>
+
+    <p class="section-title t-overview">总览</p>
+    <section class="kpis">
+      <div class="kpi">
+        <label>今日盈亏</label>
+        <div id="kOffPnl" class="value">-</div>
+        <div id="kOffPnlSub" class="sub">总余额相对日切差</div>
+      </div>
+      <div class="kpi">
+        <label>总余额</label>
+        <div id="kEquity" class="value">-</div>
+        <div id="kEquitySub" class="sub">各所权益合计</div>
+      </div>
+      <div class="kpi">
+        <label>今日成交量</label>
+        <div id="kVol" class="value">-</div>
+        <div id="kVolSub" class="sub">各所合计</div>
+      </div>
+      <div class="kpi">
+        <label>今日手续费</label>
+        <div id="kFees" class="value">-</div>
+        <div id="kFeesSub" class="sub">各所合计</div>
+      </div>
+      <div class="kpi">
+        <label>挂单合计</label>
+        <div id="kOrders" class="value">-</div>
+        <div id="kOrdersSub" class="sub">open / 期望≈</div>
+      </div>
+      <div class="kpi">
+        <label>健康</label>
+        <div id="kHealth" class="value">-</div>
+        <div id="kHealthSub" class="sub">无报错的所</div>
+      </div>
+    </section>
+
+    <p class="section-title t-venues">五所汇总</p>
+    <p class="meta" style="margin:-6px 0 4px">状态 + 官方今日明细；爆仓价有官方则显示，无则 -</p>
+    <div class="scroll">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>交易所</th><th>状态</th><th>方向</th><th>仓位(U)</th>
+            <th>挂单</th><th>mid</th><th>爆仓价</th><th>权益</th>
+            <th>浮盈亏</th><th>成交量</th><th>手续费</th>
+            <th>平仓盈亏</th><th>成交笔</th><th>完成格</th><th>备注</th>
+          </tr>
+        </thead>
+        <tbody id="venueRows"></tbody>
+      </table>
+    </div>
+    <p class="section-title t-ladder">挂单档位分布</p>
+    <p class="meta" style="margin:-6px 0 4px">横轴=价格 · 蓝线=挂单价 · 黄线=mid · 黄块=档距空洞（不均匀）</p>
+    <div id="venueLadders" class="ladders"></div>
+
+    <p class="section-title t-cal">日历</p>
+    <div class="meta" id="calMeta">按日汇总</div>
+    <div class="scroll" style="margin-top:8px">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>日期</th>
+            <th>收益</th>
+            <th>手续费</th>
+            <th>成交量</th>
+            <th>总余额</th>
+          </tr>
+        </thead>
+        <tbody id="calendarRows"></tbody>
+      </table>
+    </div>
+  </main>
+  <script>
+    const LABELS = { extended: "Extended", risex: "RISEx", decibel: "Decibel", n1: "N1", phoenix: "Phoenix" };
+    const COLORS = { extended: "#58a6ff", risex: "#3fb950", decibel: "#d29922", n1: "#39c5cf", phoenix: "#f78166" };
+    const ORDER = ["extended", "risex", "decibel", "n1", "phoenix"];
+
+    function el(id) { return document.getElementById(id); }
+    function setText(id, text, className) {
+      const node = el(id);
+      if (!node) return;
+      node.textContent = text;
+      if (className != null) node.className = className;
+    }
+    function n(v) { const x = Number(v); return Number.isFinite(x) ? x : 0; }
+    function usd(v) {
+      return "$" + n(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    function usdShort(v) {
+      return "$" + n(v).toLocaleString("en-US", { maximumFractionDigits: 0 });
+    }
+    function signed(v) {
+      const x = n(v);
+      return (x > 0 ? "+" : "") + usd(x);
+    }
+    function price(v) {
+      const x = n(v);
+      if (!x) return "-";
+      if (Math.abs(x) >= 1000) return x.toFixed(1);
+      return x.toFixed(2);
+    }
+    function cls(v) { return n(v) > 0 ? "up" : n(v) < 0 ? "down" : ""; }
+    function expectOo(v) { return Math.max(0, n(v.gridCount)); }
+    function statusOf(v) {
+      if (v.lastError) return "down";
+      if (!v.mid) return "down";
+      if (!v.seeded && n(v.openOrders) === 0) return "busy";
+      const exp = expectOo(v);
+      if (exp > 0 && n(v.openOrders) < exp * 0.5) return "busy";
+      return "ok";
+    }
+    function statusLabel(s) {
+      return s === "ok" ? "正常" : s === "busy" ? "铺单中" : "异常";
+    }
+    function sideLabel(pos) {
+      const p = n(pos);
+      if (p > 1e-12) return "多";
+      if (p < -1e-12) return "空";
+      return "平";
+    }
+
+    /** 挂单档位横轴：看档距是否均匀；黄块=空洞 */
+    function renderLadder(v, id) {
+      const orders = Array.isArray(v.orders) ? v.orders : [];
+      const mid = n(v.mid);
+      const expectGap = n(v.spacing);
+      const prices = orders
+        .map((o) => n(o.price))
+        .filter((x) => x > 0)
+        .sort((a, b) => a - b);
+      const uniq = [];
+      for (const px of prices) {
+        if (!uniq.length || Math.abs(px - uniq[uniq.length - 1]) > 1e-6) uniq.push(px);
+      }
+
+      let lo = n(v.lower);
+      let hi = n(v.upper);
+      if (!(lo > 0) || !(hi > 0) || hi <= lo) {
+        if (uniq.length >= 2) {
+          lo = uniq[0];
+          hi = uniq[uniq.length - 1];
+        } else if (mid > 0) {
+          lo = mid * 0.97;
+          hi = mid * 1.03;
+        } else {
+          return `<div class="ladder"><div class="ladder-head"><span class="name" style="color:${COLORS[id]}">${LABELS[id]}</span></div><div class="ladder-empty">无价格轴</div></div>`;
+        }
+      }
+      const pad = (hi - lo) * 0.015;
+      const axisLo = lo - pad;
+      const axisHi = hi + pad;
+      const span = axisHi - axisLo || 1;
+      const pctOf = (px) => Math.max(0, Math.min(100, ((px - axisLo) / span) * 100));
+
+      const gaps = [];
+      for (let i = 1; i < uniq.length; i++) gaps.push(uniq[i] - uniq[i - 1]);
+      const avgGap = gaps.length ? gaps.reduce((s, x) => s + x, 0) / gaps.length : 0;
+      const maxGap = gaps.length ? Math.max(...gaps) : 0;
+      const baseGap = expectGap > 0 ? expectGap : avgGap;
+      const holeThresh = baseGap > 0 ? baseGap * 1.6 : 0;
+      let holes = 0;
+      let missingEst = 0;
+      const gapMarks = [];
+      if (holeThresh > 0) {
+        for (let i = 1; i < uniq.length; i++) {
+          const g = uniq[i] - uniq[i - 1];
+          if (g <= holeThresh) continue;
+          holes += 1;
+          missingEst += Math.max(0, Math.round(g / baseGap) - 1);
+          const left = pctOf(uniq[i - 1]);
+          const right = pctOf(uniq[i]);
+          const w = Math.max(0.4, right - left);
+          gapMarks.push(
+            `<span class="ladder-gap" style="left:${left}%;width:${w}%" title="空洞 ${g.toFixed(1)} · ${price(uniq[i - 1])}→${price(uniq[i])}"></span>`
+          );
+        }
+      }
+
+      const ticks = uniq
+        .map((px) => `<span class="ladder-tick" style="left:${pctOf(px)}%" title="${price(px)}"></span>`)
+        .join("");
+      const midMark =
+        mid > 0
+          ? `<span class="ladder-mid" style="left:${pctOf(mid)}%" title="mid ${price(mid)}"></span>`
+          : "";
+
+      let statCls = "ok";
+      let statText = "均匀";
+      if (!uniq.length) {
+        statCls = "";
+        statText = "无挂单";
+      } else if (holes > 0) {
+        statCls = "bad";
+        statText = `不匀 · 空洞${holes}处≈缺${missingEst}档`;
+      } else if (baseGap > 0 && avgGap > 0 && Math.abs(avgGap - baseGap) / baseGap > 0.25) {
+        statCls = "bad";
+        statText = `档距偏 · 均${avgGap.toFixed(1)}/期望${baseGap.toFixed(1)}`;
+      } else {
+        statText = `均匀 · 均档${avgGap.toFixed(1)}${expectGap ? ` / 期望${expectGap.toFixed(1)}` : ""}`;
+      }
+
+      return `<div class="ladder">
+        <div class="ladder-head">
+          <span class="name" style="color:${COLORS[id]}">● ${LABELS[id]}</span>
+          <span class="stat ${statCls}">${statText} · ${uniq.length}档</span>
+        </div>
+        ${uniq.length
+          ? `<div class="ladder-rail">${gapMarks.join("")}${ticks}${midMark}</div>
+        <div class="ladder-axis"><span>${price(lo)}</span><span>mid ${price(mid)}</span><span>${price(hi)}</span></div>
+        <div class="ladder-hint">最大相邻档距 ${maxGap ? maxGap.toFixed(1) : "-"}</div>`
+          : `<div class="ladder-empty">暂无挂单明细</div>`}
+      </div>`;
+    }
+
+    function render(data) {
+      const venues = Array.isArray(data.venues) ? data.venues.slice() : [];
+      const byId = {};
+      for (const v of venues) byId[v.venue] = v;
+      const oo = venues.reduce((s, v) => s + n(v.openOrders), 0);
+      const exp = venues.reduce((s, v) => s + expectOo(v), 0);
+      const healthy = venues.filter((v) => statusOf(v) === "ok").length;
+      const alerts = venues.filter((v) => v.lastError).map((v) => `${v.venue}: ${v.lastError}`);
+      const ledger = data.ledger || {};
+      const cal = Array.isArray(ledger.calendar) ? ledger.calendar : [];
+      const todayRow = cal.find((r) => r.day === ledger.dayKey) || cal[0];
+      const off = data.official || {};
+      const offVenues = off.venues || {};
+      let offVol = 0, offFees = 0, offPnl = 0, offVolN = 0, offFeeN = 0, offPnlN = 0;
+      for (const id of ORDER) {
+        const o = offVenues[id];
+        if (!o || o.source !== "official") continue;
+        if (o.volume != null && Number.isFinite(Number(o.volume))) { offVol += Number(o.volume); offVolN++; }
+        if (o.fees != null && Number.isFinite(Number(o.fees))) { offFees += Number(o.fees); offFeeN++; }
+        if (o.realizedPnl != null && Number.isFinite(Number(o.realizedPnl))) { offPnl += Number(o.realizedPnl); offPnlN++; }
+      }
+      const venueEquity = venues.reduce((s, v) => s + n(v.equityUsd), 0);
+      const equityKnown = venues.filter((v) => v.equityUsd != null && Number(v.equityUsd) > 0).length;
+      const ledgerEquity = todayRow ? n(todayRow.equity) : 0;
+      const todayEquity = venueEquity > 0 ? venueEquity : ledgerEquity;
+      const readyN = Math.min(offVolN, offFeeN, offPnlN);
+
+      const equityDayPnl = todayRow != null && Number.isFinite(Number(todayRow.dayProfit))
+        ? Number(todayRow.dayProfit)
+        : null;
+      setText("mode", data.dryRun ? "DRY_RUN" : "LIVE", "pill " + (data.dryRun ? "dry" : "live"));
+      setText("offPill", readyN === ORDER.length ? "数据齐全" : `数据 ${readyN}/${ORDER.length}`, "pill " + (readyN === ORDER.length ? "offok" : "dry"));
+      setText("kEquity", todayEquity > 0 ? usd(todayEquity) : "-");
+      setText("kEquitySub", equityKnown ? `${equityKnown}/${venues.length || ORDER.length} 所有读数` : "各所权益合计");
+      setText("kVol", offVolN > 0 ? usdShort(offVol) : "-");
+      setText("kVolSub", offVolN ? `官方 ${offVolN} 所 · ${off.dayKey || ""}` : "暂无");
+      setText("kFees", offFeeN > 0 ? usd(offFees) : "-", "value");
+      setText("kFeesSub", offFeeN ? `${offFeeN} 所合计 · ${off.dayKey || ""}` : "暂无");
+      setText(
+        "kOffPnl",
+        equityDayPnl != null ? signed(equityDayPnl) : "-",
+        "value " + (equityDayPnl != null ? cls(equityDayPnl) : "")
+      );
+      setText(
+        "kOffPnlSub",
+        equityDayPnl != null
+          ? `${ledger.dayKey || "今日"} · 现余额 ${todayEquity > 0 ? usd(todayEquity) : "-"}`
+          : "暂无日切"
+      );
+      setText("kOrders", String(oo));
+      setText("kOrdersSub", `open ${oo} / 期望≈${exp}`);
+      setText("kHealth", `${healthy}/${venues.length || ORDER.length}`, "value " + (healthy === venues.length ? "up" : "warn"));
+      setText("kHealthSub", healthy === venues.length ? "各所正常" : "有所异常或未铺满");
+
+      el("venueRows").innerHTML = ORDER.map((id) => {
+        const v = byId[id];
+        const o = offVenues[id] || {};
+        const okOff = o.source === "official";
+        if (!v) {
+          return `<tr><td>${LABELS[id]}</td><td colspan="14" class="meta">暂无数据</td></tr>`;
+        }
+        const st = statusOf(v);
+        const expOo = expectOo(v);
+        const side = sideLabel(v.position);
+        const sideCls = side === "多" ? "up" : side === "空" ? "down" : "";
+        const posU = Math.abs(n(v.position) * n(v.mid));
+        const posULabel = n(v.mid) > 0 ? usd(posU) : "-";
+        const liq =
+          v.liquidationPrice != null && Number.isFinite(n(v.liquidationPrice)) && n(v.liquidationPrice) > 0
+            ? price(v.liquidationPrice)
+            : "-";
+        const midN = n(v.mid);
+        const liqN = n(v.liquidationPrice);
+        let liqCls = "";
+        if (liq !== "-" && midN > 0 && liqN > 0) {
+          const gapPct = Math.abs(midN - liqN) / midN;
+          if (gapPct < 0.03) liqCls = "down";
+          else if (gapPct < 0.06) liqCls = "warn";
+        }
+        return `<tr>
+          <td><span style="color:${COLORS[id]}">●</span> ${LABELS[id]}</td>
+          <td><span class="badge ${st}">${statusLabel(st)}</span></td>
+          <td class="${sideCls}">${side}</td>
+          <td class="${sideCls}">${posULabel}</td>
+          <td>${n(v.openOrders)}/${expOo}</td>
+          <td>${price(v.mid)}</td>
+          <td class="${liqCls}">${liq}</td>
+          <td>${v.equityUsd != null ? usd(v.equityUsd) : "-"}</td>
+          <td class="${v.unrealizedPnl != null && Number.isFinite(n(v.unrealizedPnl)) ? cls(v.unrealizedPnl) : ""}">${v.unrealizedPnl != null && Number.isFinite(n(v.unrealizedPnl)) ? signed(v.unrealizedPnl) : "-"}</td>
+          <td>${okOff && o.volume != null ? usdShort(o.volume) : "-"}</td>
+          <td>${okOff && o.fees != null ? usd(o.fees) : "-"}</td>
+          <td class="${okOff && o.realizedPnl != null ? cls(o.realizedPnl) : ""}">${okOff && o.realizedPnl != null ? signed(o.realizedPnl) : "-"}</td>
+          <td>${o.fills != null ? o.fills : "-"}</td>
+          <td>${n(v.completedRungs)}</td>
+          <td class="meta" style="white-space:normal;max-width:160px">${v.lastError || (v.seeded ? "运行中" : "待铺")}</td>
+        </tr>`;
+      }).join("") + (() => {
+        let posU = 0, rungs = 0, ooSum = 0, expSum = 0, eq = 0, eqN = 0, upnl = 0, upnlN = 0, okN = 0, knownN = 0, fills = 0, fillN = 0;
+        for (const id of ORDER) {
+          const v = byId[id];
+          const o = offVenues[id] || {};
+          if (!v) continue;
+          knownN++;
+          if (statusOf(v) === "ok") okN++;
+          if (n(v.mid) > 0) posU += Math.abs(n(v.position) * n(v.mid));
+          rungs += n(v.completedRungs);
+          ooSum += n(v.openOrders);
+          expSum += expectOo(v);
+          if (v.equityUsd != null && Number.isFinite(n(v.equityUsd))) { eq += n(v.equityUsd); eqN++; }
+          if (v.unrealizedPnl != null && Number.isFinite(n(v.unrealizedPnl))) { upnl += n(v.unrealizedPnl); upnlN++; }
+          if (o.fills != null && Number.isFinite(Number(o.fills))) { fills += Number(o.fills); fillN++; }
+        }
+        return `<tr style="background:var(--panel2);font-weight:700">
+          <td>合计</td>
+          <td>${knownN ? `${okN}/${knownN}` : "-"}</td>
+          <td class="meta">—</td>
+          <td>${posU > 0 ? usd(posU) : "-"}</td>
+          <td>${ooSum}/${expSum}</td>
+          <td class="meta">—</td>
+          <td class="meta">—</td>
+          <td>${eqN ? usd(eq) : "-"}</td>
+          <td class="${upnlN ? cls(upnl) : ""}">${upnlN ? signed(upnl) : "-"}</td>
+          <td>${offVolN ? usdShort(offVol) : "-"}</td>
+          <td>${offFeeN ? usd(offFees) : "-"}</td>
+          <td class="${offPnlN ? cls(offPnl) : ""}">${offPnlN ? signed(offPnl) : "-"}</td>
+          <td>${fillN ? fills : "-"}</td>
+          <td>${rungs}</td>
+          <td class="meta">${upnlN ? `浮盈亏 ${upnlN} 所` : ""}</td>
+        </tr>`;
+      })();
+
+      // 旧 offRows 节点若还在 DOM 则忽略（已合并进 venueRows）
+      const offEl = el("offRows");
+      if (offEl) offEl.innerHTML = "";
+
+      const ladders = el("venueLadders");
+      if (ladders) {
+        ladders.innerHTML = ORDER.map((id) => {
+          const v = byId[id];
+          if (!v) {
+            return `<div class="ladder"><div class="ladder-head"><span class="name">${LABELS[id]}</span></div><div class="ladder-empty">暂无数据</div></div>`;
+          }
+          return renderLadder(v, id);
+        }).join("");
+      }
+
+      const meta = el("calMeta");
+      if (meta) meta.textContent = `记账日 ${ledger.dayKey || "-"} · 成交量优先官方（日切固化）`;
+      const calBody = el("calendarRows");
+      if (!cal.length) {
+        calBody.innerHTML = '<tr><td colspan="5" class="meta">暂无每日记录</td></tr>';
+      } else {
+        let sumPnl = 0, sumFee = 0, sumVol = 0, pnlN = 0, feeN = 0, volN = 0;
+        const latestEquity = n((cal.find((r) => r.day === ledger.dayKey) || cal[0] || {}).equity);
+        const rows = cal.map((r) => {
+          const isToday = r.day === ledger.dayKey;
+          const bal = n(r.equity);
+          const pnl = Number.isFinite(Number(r.dayProfit)) ? Number(r.dayProfit) : null;
+          // 手续费/量：今日用实时官方；历史优先账本固化的官方，否则网格估算
+          const fee = isToday && offFeeN > 0
+            ? offFees
+            : (r.officialFees != null && Number.isFinite(Number(r.officialFees))
+              ? Number(r.officialFees)
+              : null);
+          const vol = isToday && offVolN > 0
+            ? offVol
+            : (r.officialVolume != null && Number.isFinite(Number(r.officialVolume)) && Number(r.officialVolume) > 0
+              ? Number(r.officialVolume)
+              : (n(r.todayVolume) > 0 ? n(r.todayVolume) : null));
+          if (pnl != null) { sumPnl += pnl; pnlN++; }
+          if (fee != null) { sumFee += fee; feeN++; }
+          if (vol != null) { sumVol += vol; volN++; }
+          return `<tr>
+            <td>${r.day}${isToday ? "（今天）" : ""}</td>
+            <td class="${pnl != null ? cls(pnl) : ""}">${pnl != null ? signed(pnl) : "-"}</td>
+            <td>${fee != null ? usd(fee) : "-"}</td>
+            <td>${vol != null ? usdShort(vol) : "-"}</td>
+            <td>${bal > 0 ? usd(bal) : "-"}</td>
+          </tr>`;
+        }).join("");
+        calBody.innerHTML = rows + `<tr style="background:var(--panel2);font-weight:700">
+          <td>总计</td>
+          <td class="${pnlN ? cls(sumPnl) : ""}">${pnlN ? signed(sumPnl) : "-"}</td>
+          <td>${feeN ? usd(sumFee) : "-"}</td>
+          <td>${volN ? usdShort(sumVol) : "-"}</td>
+          <td>${latestEquity > 0 ? usd(latestEquity) : "-"}</td>
+        </tr>`;
+      }
+
+      const box = el("alert");
+      if (alerts.length) {
+        box.style.display = "block";
+        box.textContent = alerts.join("；");
+      } else {
+        box.style.display = "none";
+        box.textContent = "";
+      }
+
+      el("time").textContent = "更新 " + new Date(data.updatedAt || Date.now()).toLocaleTimeString("zh-CN");
+      el("dot").className = "dot on";
+    }
+
+    async function poll() {
+      try {
+        const r = await fetch("/api/snapshot?_=" + Date.now(), { cache: "no-store" });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        render(await r.json());
+      } catch (e) {
+        el("dot").className = "dot off";
+        el("time").textContent = "读取失败: " + (e && e.message ? e.message : e);
+      }
+    }
+    poll();
+    setInterval(poll, 3000);
+  </script>
+</body>
+</html>

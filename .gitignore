@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.env
+data/
+secrets/
+logs/
+*.log
+.DS_Store
+*.pem
+*.key
+id.json
+.vscode/
+.idea/
