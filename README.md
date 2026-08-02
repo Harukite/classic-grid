@@ -8,10 +8,10 @@
 
 适配器：**Extended · RISEx · Decibel · N1 · Phoenix**
 
-> 开源模板，**不含私钥 / API Key / 服务器地址 / 真实账本**。  
-> 演示图均为脱敏示例数据。推特：[@aiqiang888](https://twitter.com/aiqiang888)
+> 开源模板，**不含私钥 / API Key / Telegram Token / 服务器地址 / 账本文件**。  
+> 下图为看板界面示意（无密钥、无地址）。推特：[@aiqiang888](https://twitter.com/aiqiang888)
 
-![Dashboard demo](docs/images/dashboard-ui.png)
+![Dashboard](docs/images/dashboard-ui.png)
 
 ---
 
@@ -55,27 +55,52 @@
 
 ---
 
-## 给 AI / 开发者
+## 怎么跑起来
 
-1. `npm install` → 复制 `.env.example` 为 `.env`（只填本机密钥）
-2. 默认 `DRY_RUN=1`；实盘需用户明确：`DRY_RUN=0` + `LIVE_CONFIRM=YES`
-3. 策略：`src/grid.ts` · 循环：`src/loop.ts` · 适配器：`src/venues/`
-4. 看板：`npm run dashboard` 或随 `npm start` → `http://127.0.0.1:8088/api/snapshot`
-5. 演示页（脱敏）：打开 `docs/demo-dashboard.html`
-6. **禁止**提交 `.env` / `secrets/` / `data/`；见 [`SECURITY.md`](./SECURITY.md)
+1. `npm install`
+2. 复制环境模板（**只在本机填密钥，永远不要提交 `.env`**）：
 
 ```bash
-npm install
 cp .env.example .env
-npm test
-DRY_RUN=1 npm start -- --once
 ```
+
+3. 按需填写 `.env`（变量名见模板注释；值为空表示未配置）  
+   - 各所 API / 私钥 / keypair 路径（`secrets/*.json`，已在 `.gitignore`）  
+   - `VENUES=` 只开你有密钥的所，例如 `extended,phoenix`  
+   - 默认 `DRY_RUN=1`（模拟）；实盘须同时：`DRY_RUN=0` 且 `LIVE_CONFIRM=YES`
+4. 试跑一轮：`DRY_RUN=1 npm start -- --once`  
+   看板：`http://127.0.0.1:8088/`（`/api/snapshot`）
+5. **禁止**提交 `.env` / `secrets/` / `data/`；见 [`SECURITY.md`](./SECURITY.md)
 
 Windows：
 
 ```powershell
+Copy-Item .env.example .env
 $env:DRY_RUN="1"; npm start -- --once
 ```
+
+### Telegram 报警（可选）
+
+代码已包含：`src/telegram.ts`（开/平简报、错误去重、整点总览）。在 **本机 `.env`** 填写：
+
+```env
+TELEGRAM_ENABLED=true
+TELEGRAM_BOT_TOKEN=     # BotFather 发的 token，勿提交仓库
+TELEGRAM_CHAT_IDS=      # 你的 chat_id；多个用逗号分隔
+```
+
+获取方式（自行完成，勿把真实值贴进 Issue/PR）：
+
+1. Telegram 找 [@BotFather](https://t.me/BotFather) → `/newbot` → 得到 `BOT_TOKEN`
+2. 先给 bot 发一条任意消息，再用 `https://api.telegram.org/bot<TOKEN>/getUpdates` 看 `chat.id`，填入 `TELEGRAM_CHAT_IDS`
+3. 重启进程后：成交开/平、异常、整点总览会推送到该 chat
+
+未启用或 token/chat 为空时，程序照常跑，只是不发 TG。
+
+### 给 AI / 改代码时
+
+- 策略：`src/grid.ts` · 循环：`src/loop.ts` · 适配器：`src/venues/` · TG：`src/telegram.ts`
+- 演示静态页：`docs/demo-dashboard.html`
 
 ---
 
