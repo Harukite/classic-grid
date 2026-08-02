@@ -8,7 +8,7 @@
     "type": "git",
     "url": "https://github.com/beibei030/classic-grid.git"
   },
-  "author": "beibei030",
+  "author": "aiqiang888",
   "license": "MIT",
   "scripts": {
     "start": "node --import tsx src/cli/run.ts",

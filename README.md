@@ -2,14 +2,14 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](./package.json)
-[![Author](https://img.shields.io/badge/author-beibei030-informational.svg)](https://github.com/beibei030)
+[![Twitter](https://img.shields.io/badge/Twitter-@aiqiang888-1DA1F2.svg)](https://twitter.com/aiqiang888)
 
 等差网格：现价下买上卖，**成交后补相邻反向单**；启动校验格距 > 双边手续费、保证金预检。
 
 适配器：**Extended · RISEx · Decibel · N1 · Phoenix**
 
 > 开源模板，**不含私钥 / API Key / 服务器地址 / 真实账本**。  
-> 演示图均为脱敏示例数据。作者：[beibei030](https://github.com/beibei030)
+> 演示图均为脱敏示例数据。推特：[@aiqiang888](https://twitter.com/aiqiang888)
 
 ![Dashboard demo](docs/images/dashboard-ui.png)
 
@@ -17,10 +17,10 @@
 
 ---
 
-## 推荐注册（请走推荐链接）
+## 注册链接
 
-| 交易所 | 推荐链接 |
-|--------|----------|
+| 交易所 | 链接 |
+|--------|------|
 | **Decibel** | https://app.decibel.trade/r/K7B2QM |
 | **Phoenix** | https://phoenix.trade/?code=YNS0TXV0 |
 | **Extended** | https://app.extended.exchange/join/AIQIANG888 |
@@ -114,4 +114,4 @@ test/
 
 ## License
 
-MIT © [beibei030](https://github.com/beibei030)
+MIT · 推特 [@aiqiang888](https://twitter.com/aiqiang888)
