@@ -1,6 +1,6 @@
 # 我们踩过的坑 / 已解决问题
 
-本页记录把五所经典网格跑稳时遇到的真实难题与解法，方便后来者（和 AI）少走弯路。
+本页记录把八所经典网格跑稳时遇到的真实难题与解法，方便后来者（和 AI）少走弯路。
 
 ## 1. 成交后如何保持网格不断档
 
@@ -59,3 +59,14 @@
 ## 10. 开源与生产隔离
 
 生产密钥、服务器地址、真实 ledger **不得**进公开库。开源树只保留适配器 + 策略 + 看板模板 + `.env.example`。
+
+## 11. 链上 CLOB（PopDEX）与 gasless 下单
+
+**问题**：PopDEX（Morph Tachyon）是链上订单簿，下单=合约调用 `eth_sendRawTransaction`，与 CEX 风格 REST 完全不同；钱包需走 viem 本地签名。  
+**做法**：`popdex.ts` 用 `viem` 构造 `Order` 合约 place/cancel 的 calldata，走 `/api/v1/web3/rpc` 广播；gasless 由官方中继代付，无需自备 gas。挂单价按 `tick_size` / `lot_size` 对齐。  
+**注意**：官方统计 indexer 明细（trade/fills）仍在接入中，量/费口径要与链上 `execValue` 对齐。
+
+## 12. 坏 JSON 回包不一定是故障
+
+**问题**：Phoenix 等下单接口偶发回包 `id` 字段缺引号，导致 `JSON.parse` 抛「is not valid JSON」；若按硬错误处理会狂刷 TG、把看板标红。  
+**做法**：把这类解析错误归类为「瞬时软错误」——日志仍记、但不发 TG、不挂看板红字；下一轮自动重试补单。

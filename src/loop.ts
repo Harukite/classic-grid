@@ -12,13 +12,13 @@ import {
   upsertDashboardVenue,
   getDashboardSnapshot,
 } from "./dashboard.js";
+import { isBotPaused, loadBotPauseState } from "./botControl.js";
 import {
   assertFeeOk,
   assertMarginOk,
   buildGrid,
   computeRisk,
   planFromFillsAndSeed,
-  replacementFor,
   type BuiltGrid,
 } from "./grid.js";
 import { loadVenueSessionCounters } from "./ledger.js";
@@ -31,6 +31,7 @@ import {
   tgClose,
   tgDailyOverview,
   tgError,
+  isSoftPlaceError,
   tgOpen,
 } from "./telegram.js";
 import { loadEnv } from "./loadEnv.js";
@@ -39,6 +40,13 @@ import path from "node:path";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/** 读侧瞬时网络/SDK 抖动：不标面板异常、不刷仓位归零 */
+function isTransientReadError(msg: string): boolean {
+  return /fetch failed|ECONNRESET|ETIMEDOUT|ECONNREFUSED|socket hang up|UND_ERR|internal assertion violation|network|getaddrinfo|429|Too Many|rate.?limit/i.test(
+    msg
+  );
 }
 
 /** 软启：从 data/status.json 恢复锚点，避免重锚导致误撤现有挂单 */
@@ -188,6 +196,65 @@ async function tickOne(
   market: string,
   cfg: RuntimeConfig
 ): Promise<void> {
+  // 紧急暂停：只读刷新看板，绝不 apply（不下单/不撤单/不补单）
+  if (isBotPaused()) {
+    if (!rt.params || !rt.built) {
+      try {
+        await ensureAnchored(rt, market, cfg);
+      } catch (e: any) {
+        console.warn(
+          `[${rt.ex.id}] PAUSED ensureAnchored: ${String(e?.message || e).slice(0, 120)}`
+        );
+      }
+    }
+    const snap = await rt.ex.snapshot(market);
+    syncInventory(rt, snap.position, snap.mid);
+    const upnlOfficial =
+      snap.unrealizedPnl != null && Number.isFinite(Number(snap.unrealizedPnl))
+        ? Number(snap.unrealizedPnl)
+        : null;
+    rt.unrealizedPnl = upnlOfficial ?? 0;
+    const g = rt.params;
+    const built = rt.built;
+    const off = getOfficialCache()?.venues?.[rt.ex.id];
+    upsertDashboardVenue({
+      venue: rt.ex.id,
+      market,
+      mid: snap.mid,
+      anchorMid: rt.anchorMid || 0,
+      lower: g?.lower || 0,
+      upper: g?.upper || 0,
+      spacing: built?.spacing || 0,
+      sizeBase: g?.sizeBase || 0,
+      gridCount: g?.gridCount || gridFor(cfg, rt.ex.id).gridCount,
+      position: snap.position,
+      openOrders: snap.openOrders.length,
+      seeded: rt.seeded,
+      completedRungs: rt.completedRungs,
+      gridProfit: Number(rt.gridProfit.toFixed(4)),
+      unrealizedPnl:
+        upnlOfficial != null ? Number(upnlOfficial.toFixed(4)) : undefined,
+      equityUsd:
+        snap.equityUsd != null && Number.isFinite(snap.equityUsd)
+          ? Number(snap.equityUsd.toFixed(4))
+          : undefined,
+      orders: snap.openOrders.slice(0, 120).map((o) => ({
+        side: o.side,
+        price: Number(o.price),
+      })),
+      officialVolume: off?.source === "official" ? off.volume : null,
+      officialFees: off?.source === "official" ? off.fees : null,
+      officialRealizedPnl: off?.source === "official" ? off.realizedPnl : null,
+      officialSource: off?.source === "official" ? "official" : "local",
+      lastError: undefined,
+      updatedAt: new Date().toISOString(),
+    });
+    console.log(
+      `[${rt.ex.id}] PAUSED mid=${snap.mid.toFixed(2)} pos=${snap.position} oo=${snap.openOrders.length}`
+    );
+    return;
+  }
+
   const { mid, snap } = await ensureAnchored(rt, market, cfg);
   const g = rt.params!;
   const built = rt.built!;
@@ -211,35 +278,46 @@ async function tickOne(
     maxWrites: g.maxWritesPerTick,
     seeded: rt.seeded,
     maxOpenOrders: g.maxOpenOrders,
+    skipBand: g.skipBand,
   });
 
-  if (plan.completedRungs > 0) {
-    const perRung = built.spacing * g.sizeBase;
-    let simPos = posBefore;
-    for (const f of plan.filled) {
-      const repl = replacementFor(f, built.levels, g.mode);
-      if (!repl) continue;
-      const { kind, posAfter } = classifyTrade(simPos, f.side, g.sizeBase);
-      simPos = posAfter;
-      if (kind === "开多" || kind === "开空") {
-        void tgOpen({
-          venue: rt.ex.id,
-          kind,
-          posAfter,
-          mid: snap.mid,
-          openOrders: snap.openOrders,
-        });
-      } else {
-        rt.completedRungs += 1;
-        rt.gridProfit += perRung;
-        void tgClose({
-          venue: rt.ex.id,
-          kind,
-          posAfter,
-          mid: snap.mid,
-          openOrders: snap.openOrders,
-          pnlUsd: perRung,
-        });
+  // TG / 完成格：按交易所真实仓位变化，不按「挂单 ID 消失」推断（撤补会误报吃格）
+  {
+    const size = g.sizeBase;
+    const perRung = built.spacing * size;
+    const posNow = snap.position;
+    const thresh = size * 0.35;
+    if (size > 0 && Number.isFinite(posBefore) && Math.abs(posNow - posBefore) >= thresh) {
+      let sim = posBefore;
+      for (let step = 0; step < 40 && Math.abs(posNow - sim) >= thresh; step++) {
+        const side: Side = posNow > sim ? "buy" : "sell";
+        const { kind, posAfter } = classifyTrade(sim, side, size);
+        if (side === "buy" && posAfter > posNow + size * 0.1) break;
+        if (side === "sell" && posAfter < posNow - size * 0.1) break;
+        sim = posAfter;
+        const displayPos = Math.abs(posNow - sim) < thresh ? posNow : sim;
+        if (kind === "开多" || kind === "开空") {
+          void tgOpen({
+            venue: rt.ex.id,
+            kind,
+            posAfter: displayPos,
+            mid: snap.mid,
+            fillBase: size,
+            openOrders: snap.openOrders,
+          });
+        } else {
+          rt.completedRungs += 1;
+          rt.gridProfit += perRung;
+          void tgClose({
+            venue: rt.ex.id,
+            kind,
+            posAfter: displayPos,
+            mid: snap.mid,
+            fillBase: size,
+            openOrders: snap.openOrders,
+            pnlUsd: perRung,
+          });
+        }
       }
     }
   }
@@ -255,8 +333,11 @@ async function tickOne(
       console.log(
         `[${rt.ex.id}] apply placed=${result.placed} cancelled=${result.cancelled} failed=${result.failed} ${result.errors.join("; ")}`
       );
-      applyErr = result.errors.slice(0, 2).join("; ") || `failed=${result.failed}`;
-      void tgError(rt.ex.id, applyErr);
+      const raw =
+        result.errors.slice(0, 2).join("; ") || `failed=${result.failed}`;
+      void tgError(rt.ex.id, raw);
+      // 穿价/post-only 类：不提醒也不挂看板红字（下轮会重试）
+      if (!isSoftPlaceError(rt.ex.id, raw)) applyErr = raw;
     }
   }
 
@@ -303,6 +384,10 @@ export async function runLoop(opts?: { once?: boolean }): Promise<void> {
   const cfg = loadRuntimeConfig();
   assertLiveAllowed(cfg);
   softResumeAnchors = loadSoftResumeAnchors();
+  loadBotPauseState();
+  if (isBotPaused()) {
+    console.warn("[bot-control] starting in PAUSED mode（data/bot-paused.json）");
+  }
 
   console.log(
     `classic-grid start dryRun=${cfg.dryRun} venues=${cfg.venues.join(",")} markets=${cfg.markets.join(",")} tickMs=${cfg.tickMs}`
@@ -485,26 +570,51 @@ export async function runLoop(opts?: { once?: boolean }): Promise<void> {
           await tickOne(rt, market, cfg);
         } catch (e: any) {
           const msg = String(e?.message || e).slice(0, 200);
-          console.error(`[${rt.ex.id}] tick failed: ${msg}`);
-          rt.lastError = msg;
-          void tgError(rt.ex.id, `tick failed: ${msg}`);
+          const transient = isTransientReadError(msg);
+          console.error(
+            `[${rt.ex.id}] tick failed${transient ? " (transient)" : ""}: ${msg}`
+          );
+          // 瞬时读失败：保留上次看板，不标异常、不把仓位/挂单刷成 0（绝不因此撤单）
+          if (!transient) {
+            rt.lastError = msg;
+            void tgError(rt.ex.id, `tick failed: ${msg}`);
+          } else {
+            rt.lastError = undefined;
+            void tgError(rt.ex.id, `tick failed: ${msg}`);
+          }
+          const prev = getDashboardSnapshot().venues.find(
+            (v) => v.venue === rt.ex.id
+          );
           upsertDashboardVenue({
             venue: rt.ex.id,
             market,
-            mid: 0,
-            anchorMid: rt.anchorMid,
-            lower: rt.params?.lower || 0,
-            upper: rt.params?.upper || 0,
-            spacing: rt.built?.spacing || 0,
-            sizeBase: rt.params?.sizeBase || 0,
-            gridCount: gridFor(cfg, rt.ex.id).gridCount,
-            position: 0,
-            openOrders: 0,
+            mid: transient && prev?.mid ? prev.mid : 0,
+            anchorMid: rt.anchorMid || prev?.anchorMid || 0,
+            lower: rt.params?.lower || prev?.lower || 0,
+            upper: rt.params?.upper || prev?.upper || 0,
+            spacing: rt.built?.spacing || prev?.spacing || 0,
+            sizeBase: rt.params?.sizeBase || prev?.sizeBase || 0,
+            gridCount:
+              gridFor(cfg, rt.ex.id).gridCount || prev?.gridCount || 0,
+            position:
+              transient && prev && Number.isFinite(prev.position)
+                ? prev.position
+                : 0,
+            openOrders:
+              transient && prev && Number.isFinite(prev.openOrders)
+                ? prev.openOrders
+                : 0,
             seeded: rt.seeded,
             completedRungs: rt.completedRungs,
             gridProfit: Number(rt.gridProfit.toFixed(4)),
             unrealizedPnl: Number(rt.unrealizedPnl.toFixed(4)),
-            lastError: msg,
+            equityUsd: transient ? prev?.equityUsd : undefined,
+            orders: transient ? prev?.orders : undefined,
+            officialVolume: prev?.officialVolume,
+            officialFees: prev?.officialFees,
+            officialRealizedPnl: prev?.officialRealizedPnl,
+            officialSource: prev?.officialSource,
+            lastError: transient ? undefined : msg,
             updatedAt: new Date().toISOString(),
           });
         }

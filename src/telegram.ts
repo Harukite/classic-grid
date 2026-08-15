@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { loadEnv } from "./loadEnv.js";
 
 let lastSentAt = 0;
@@ -10,6 +12,9 @@ const VENUE_LABEL: Record<string, string> = {
   decibel: "Decibel",
   n1: "N1",
   phoenix: "Phoenix",
+  phoenix2: "ph2号",
+  nado: "Nado",
+  popdex: "PopDEX",
 };
 
 function venueLabel(id: string): string {
@@ -83,21 +88,47 @@ export async function tgSend(
   return ok;
 }
 
-export async function tgError(venue: string, msg: string): Promise<void> {
-  const short = String(msg || "").replace(/\s+/g, " ").slice(0, 240);
-  const isRate = /429|限流|rate.?limit|max open orders/i.test(short);
-  // Phoenix/Solana 瞬时拒单：压缩文案 + 长去重，避免 Simulation 长日志每 2 分钟刷一次
-  const isSoftPhoenix =
-    venue === "phoenix" &&
-    /place_order|MatchingEngine|Simulation failed|block height|tx 过期|穿价|CU 不足/i.test(
+/** 穿价 / post-only / 链上瞬时拒单 / 坏回包：可下轮重试，不发 TG、不挂看板红字 */
+export function isSoftPlaceError(venue: string, msg: string): boolean {
+  const short = String(msg || "").replace(/\s+/g, " ");
+  // Phoenix API 偶发坏 JSON（id 缺引号等）→ 当拍补单失败，下轮重试；勿标异常
+  if (
+    /is not valid JSON|Unexpected token|Unexpected number in JSON|Expected ',' or '}' after property value|Exponent part is missing a number in JSON|JSON at position/i.test(
+      short
+    )
+  ) {
+    return true;
+  }
+  if (venue === "phoenix" || venue === "phoenix2") {
+    return /place_order|MatchingEngine|Simulation failed|block height|tx 过期|穿价|CU 不足/i.test(
       short
     );
-  const text = isSoftPhoenix
-    ? `⚠️ [${venueLabel(venue)}] 补单暂拒（穿价/链上瞬时），下轮自动重试`
-    : `⚠️ [${venueLabel(venue)}] ${short}`;
-  await tgSend(text, {
-    key: `err:${venue}:${isRate ? "rate" : isSoftPhoenix ? "soft-place" : short.slice(0, 80)}`,
-    ttlMs: isRate || isSoftPhoenix ? 600_000 : 120_000,
+  }
+  if (venue === "nado") {
+    return /2008|post-only|crosses the book|穿价/i.test(short);
+  }
+  if (venue === "popdex") {
+    return /post.?only|cross|穿价|would be (immediately )?filled|rejected/i.test(short);
+  }
+  return false;
+}
+
+export async function tgError(venue: string, msg: string): Promise<void> {
+  const short = String(msg || "").replace(/\s+/g, " ").slice(0, 240);
+  // 读侧瞬时网络/SDK 抖动：只打日志，不刷 TG（网格仍在跑）
+  if (
+    /fetch failed|ECONNRESET|ETIMEDOUT|ECONNREFUSED|socket hang up|UND_ERR|internal assertion violation|network|getaddrinfo/i.test(
+      short
+    )
+  ) {
+    return;
+  }
+  const isRate = /429|限流|rate.?limit|max open orders/i.test(short);
+  // Phoenix/Nado 瞬时穿价拒单：不提醒（日志里仍有 apply failed）
+  if (isSoftPlaceError(venue, short)) return;
+  await tgSend(`⚠️ [${venueLabel(venue)}] ${short}`, {
+    key: `err:${venue}:${isRate ? "rate" : short.slice(0, 80)}`,
+    ttlMs: isRate ? 600_000 : 120_000,
   });
 }
 
@@ -139,6 +170,12 @@ function fmtPosU(pos: number, mid: number): string {
   return `${u.toFixed(0)}U`;
 }
 
+function fmtFillU(sizeBase: number, mid: number): string {
+  if (!(mid > 0) || !(sizeBase > 0)) return "-";
+  const u = Math.abs(sizeBase) * mid;
+  return `${u.toFixed(0)}U`;
+}
+
 function fmtPnlLabel(pnlUsd: number): string {
   const abs = Math.abs(pnlUsd);
   const n = abs >= 10 ? abs.toFixed(2) : abs.toFixed(4);
@@ -146,54 +183,60 @@ function fmtPnlLabel(pnlUsd: number): string {
   return `盈利 +${n}U`;
 }
 
+function fmtBagPos(pos: number, mid: number): string {
+  if (!(mid > 0)) return "-";
+  if (Math.abs(pos) < 1e-12) return "0U";
+  const side = pos > 0 ? "多" : "空";
+  return `${side} ${fmtPosU(pos, mid)}`;
+}
+
 function tradeLines(p: {
   venue: string;
-  action: "开" | "平";
-  pnlLabel?: string | null;
+  head: string;
   buyOrders: number;
   sellOrders: number;
-  posU: string;
+  bagPos: string;
 }): string {
-  const head = p.pnlLabel
-    ? `${venueLabel(p.venue)} · ${p.action} · ${p.pnlLabel}`
-    : `${venueLabel(p.venue)} · ${p.action}`;
   return [
-    head,
+    p.head,
     `挂单 多${p.buyOrders} · 空${p.sellOrders}`,
-    `仓位 ${p.posU}`,
+    `现仓 ${p.bagPos}`,
   ].join("\n");
 }
 
-/** 开仓：所 · 开 · 挂单多空 · 仓位U */
+/** 开仓：所 · 开多/开空 +本笔U · 挂单 · 现仓 */
 export async function tgOpen(p: {
   venue: string;
   kind: "开多" | "开空";
   posAfter: number;
   mid: number;
+  /** 本笔成交 size（base），用于显示 +本笔U */
+  fillBase: number;
   openOrders: Array<{ side: string }>;
 }): Promise<void> {
   const { buy, sell } = countBuySell(p.openOrders);
   await tgSend(
     tradeLines({
       venue: p.venue,
-      action: "开",
+      head: `${venueLabel(p.venue)} · ${p.kind} +${fmtFillU(p.fillBase, p.mid)}`,
       buyOrders: buy,
       sellOrders: sell,
-      posU: fmtPosU(p.posAfter, p.mid),
+      bagPos: fmtBagPos(p.posAfter, p.mid),
     }),
     {
-      key: `open:${p.venue}:${p.kind}:${Math.floor(Date.now() / 8_000)}`,
+      key: `open:${p.venue}:${p.kind}:${p.posAfter.toFixed(6)}:${Math.floor(Date.now() / 8_000)}`,
       ttlMs: 2_000,
     }
   );
 }
 
-/** 平仓：所 · 平 · 盈利/亏损 xU · 挂单多空 · 仓位U */
+/** 平仓：所 · 平多/平空 · 盈亏 · 挂单 · 现仓 */
 export async function tgClose(p: {
   venue: string;
   kind: "平多" | "平空";
   posAfter: number;
   mid: number;
+  fillBase: number;
   openOrders: Array<{ side: string }>;
   /** 单笔盈亏（优先官方 fill；否则格距×size） */
   pnlUsd?: number | null;
@@ -206,14 +249,13 @@ export async function tgClose(p: {
   await tgSend(
     tradeLines({
       venue: p.venue,
-      action: "平",
-      pnlLabel,
+      head: `${venueLabel(p.venue)} · ${p.kind} · ${pnlLabel}`,
       buyOrders: buy,
       sellOrders: sell,
-      posU: fmtPosU(p.posAfter, p.mid),
+      bagPos: fmtBagPos(p.posAfter, p.mid),
     }),
     {
-      key: `close:${p.venue}:${p.kind}:${Math.floor(Date.now() / 8_000)}`,
+      key: `close:${p.venue}:${p.kind}:${p.posAfter.toFixed(6)}:${Math.floor(Date.now() / 8_000)}`,
       ttlMs: 2_000,
     }
   );
@@ -223,7 +265,7 @@ export async function tgBoot(summary: string): Promise<void> {
   await tgSend(`🚀 经典网格启动\n${summary}`, { key: "boot", ttlMs: 30_000 });
 }
 
-/** 整点/日报：只报看板总览 */
+/** 整点/日报：只报看板总览；并落盘便于日历回填 */
 export async function tgDailyOverview(p: {
   dayKey: string;
   dayProfit: number | null;
@@ -245,6 +287,25 @@ export async function tgDailyOverview(p: {
     `挂单 ${p.openOrders} / 期望≈${p.expectOrders}`,
     `健康 ${p.healthy}/${p.totalVenues}`,
   ];
+  try {
+    const dir = path.resolve(process.cwd(), "data");
+    fs.mkdirSync(dir, { recursive: true });
+    const row = {
+      at: new Date().toISOString(),
+      dayKey: p.dayKey,
+      volume: p.volume,
+      fees: p.fees,
+      dayProfit: p.dayProfit,
+      equity: p.equity,
+    };
+    fs.appendFileSync(
+      path.join(dir, "tg-hourly.jsonl"),
+      JSON.stringify(row) + "\n",
+      "utf8"
+    );
+  } catch {
+    /* ignore */
+  }
   await tgSend(lines.join("\n"), {
     key: `daily:${p.dayKey}:${new Date().getHours()}`,
     ttlMs: 50 * 60_000,

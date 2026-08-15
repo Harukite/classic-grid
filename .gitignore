@@ -3,11 +3,15 @@ dist/
 .env
 data/
 secrets/
-logs/
 *.log
 .DS_Store
-*.pem
-*.key
-id.json
-.vscode/
-.idea/
+
+# 运维脚本 / 探针（含生产环境地址与账户信息，勿提交公开库）
+deploy/
+scripts/
+
+# 生产快照 / 内部文档 / 研究模板
+docs/live-snapshot*.json
+.env.research.example
+定档.md
+vendor/risex/package-from-vps.json

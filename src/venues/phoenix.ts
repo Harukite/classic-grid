@@ -13,7 +13,6 @@ import {
 import {
   OrderFlags,
   Side as PhoenixSide,
-  calculateLiquidationPriceUsd,
   createPhoenixClient,
   type PhoenixClient,
 } from "@ellipsis-labs/rise";
@@ -72,9 +71,14 @@ function kitIxToWeb3(ix: {
   });
 }
 
-function loadKeypair(): Keypair {
+export type PhoenixVenueId = "phoenix" | "phoenix2";
+
+function loadKeypair(id: PhoenixVenueId): Keypair {
   loadEnv();
-  const envKey = process.env.PHOENIX_PRIVATE_KEY?.trim();
+  const envKey =
+    id === "phoenix2"
+      ? process.env.PHOENIX2_PRIVATE_KEY?.trim()
+      : process.env.PHOENIX_PRIVATE_KEY?.trim();
   if (envKey) {
     if (envKey.startsWith("[")) {
       return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(envKey)));
@@ -82,10 +86,20 @@ function loadKeypair(): Keypair {
     return Keypair.fromSecretKey(bs58.decode(envKey));
   }
   const keyPath =
-    process.env.PHOENIX_KEYPAIR_PATH?.trim() ||
-    path.resolve(process.cwd(), "secrets", "phoenix.key");
+    (id === "phoenix2"
+      ? process.env.PHOENIX2_KEYPAIR_PATH?.trim()
+      : process.env.PHOENIX_KEYPAIR_PATH?.trim()) ||
+    path.resolve(
+      process.cwd(),
+      "secrets",
+      id === "phoenix2" ? "phoenix2.key" : "phoenix.key"
+    );
   if (!fs.existsSync(keyPath)) {
-    throw new Error(`缺少 Phoenix 密钥：${keyPath}（或设 PHOENIX_PRIVATE_KEY）`);
+    throw new Error(
+      `缺少 ${id === "phoenix2" ? "ph2号" : "Phoenix"} 密钥：${keyPath}（或设 ${
+        id === "phoenix2" ? "PHOENIX2_PRIVATE_KEY" : "PHOENIX_PRIVATE_KEY"
+      }）`
+    );
   }
   const raw = fs.readFileSync(keyPath, "utf8").trim();
   if (raw.startsWith("[")) {
@@ -95,7 +109,7 @@ function loadKeypair(): Keypair {
 }
 
 export class PhoenixExecutor implements VenueExecutor {
-  readonly id = "phoenix" as const;
+  readonly id: PhoenixVenueId;
   private client: PhoenixClient | null = null;
   private kp: Keypair | null = null;
   private conn: Connection | null = null;
@@ -103,12 +117,27 @@ export class PhoenixExecutor implements VenueExecutor {
   private authority = "";
   private symbolCache = new Map<string, string>();
 
-  constructor(private dryRun: boolean) {}
+  constructor(
+    private dryRun: boolean,
+    id: PhoenixVenueId = "phoenix"
+  ) {
+    this.id = id;
+  }
 
   async connect(): Promise<void> {
     loadEnv();
-    this.apiUrl = (process.env.PHOENIX_API_URL || DEFAULT_API).replace(/\/$/, "");
-    const rpc = process.env.PHOENIX_SOLANA_RPC || process.env.SOLANA_RPC || DEFAULT_RPC;
+    const apiEnv =
+      this.id === "phoenix2"
+        ? process.env.PHOENIX2_API_URL || process.env.PHOENIX_API_URL
+        : process.env.PHOENIX_API_URL;
+    const rpcEnv =
+      this.id === "phoenix2"
+        ? process.env.PHOENIX2_SOLANA_RPC ||
+          process.env.PHOENIX_SOLANA_RPC ||
+          process.env.SOLANA_RPC
+        : process.env.PHOENIX_SOLANA_RPC || process.env.SOLANA_RPC;
+    this.apiUrl = (apiEnv || DEFAULT_API).replace(/\/$/, "");
+    const rpc = rpcEnv || DEFAULT_RPC;
     this.client = createPhoenixClient({
       apiUrl: this.apiUrl,
       rpcUrl: rpc,
@@ -117,10 +146,10 @@ export class PhoenixExecutor implements VenueExecutor {
     });
     await this.client.exchange.ready();
     if (this.dryRun) return;
-    this.kp = loadKeypair();
+    this.kp = loadKeypair(this.id);
     this.authority = this.kp.publicKey.toBase58();
     this.conn = new Connection(rpc, "confirmed");
-    console.log(`[phoenix] authority=${this.authority}`);
+    console.log(`[${this.id}] authority=${this.authority}`);
   }
 
   disconnect(): void {
@@ -229,40 +258,15 @@ export class PhoenixExecutor implements VenueExecutor {
 
     let position = 0;
     let unrealizedPnl: number | undefined;
-    let liquidationPrice: number | undefined;
-    let entryUsd = 0;
     for (const p of sub?.positions || []) {
       if (String(p.symbol || "").toUpperCase() !== symbol.toUpperCase()) continue;
       position = num(p.basePositionLots) * LOT;
       const entry = num(p.entryPriceUsd ?? p.entryPriceTicks);
-      entryUsd = entry;
       if (entry > 0 && mid > 0 && Math.abs(position) > 0) {
         // 官方均价 × 标记价；lots 带符号（多正空负）
         unrealizedPnl = position * (mid - entry);
       }
       break;
-    }
-
-    // Hawkeye 同源公式（SDK calculateLiquidationPriceUsd）
-    if (Math.abs(position) > 0 && entryUsd > 0 && equityUsd != null && equityUsd > 0) {
-      try {
-        const lev = Math.max(
-          1,
-          Number(process.env.PHOENIX_LEVERAGE || 30) || 30
-        );
-        const liq = calculateLiquidationPriceUsd({
-          positionSize: position,
-          entryPriceUsd: entryUsd,
-          leverage: lev,
-          maintenanceMarginBps: 100,
-          collateralUsd: equityUsd,
-        });
-        if (liq != null && Number.isFinite(liq) && liq > 0) {
-          liquidationPrice = liq;
-        }
-      } catch {
-        /* ignore */
-      }
     }
 
     const openOrders: LiveOrder[] = [];
@@ -295,7 +299,6 @@ export class PhoenixExecutor implements VenueExecutor {
       openOrders,
       equityUsd,
       unrealizedPnl,
-      liquidationPrice,
     };
   }
 
@@ -359,13 +362,13 @@ export class PhoenixExecutor implements VenueExecutor {
             if (mid > 0 && Number.isFinite(px)) {
               if (intent.order.side === "sell" && px <= mid) {
                 console.log(
-                  `[phoenix] skip cross sell@${px} mid=${mid.toFixed(2)}（下轮再补）`
+                  `[${this.id}] skip cross sell@${px} mid=${mid.toFixed(2)}（下轮再补）`
                 );
                 continue;
               }
               if (intent.order.side === "buy" && px >= mid) {
                 console.log(
-                  `[phoenix] skip cross buy@${px} mid=${mid.toFixed(2)}（下轮再补）`
+                  `[${this.id}] skip cross buy@${px} mid=${mid.toFixed(2)}（下轮再补）`
                 );
                 continue;
               }
@@ -413,7 +416,7 @@ export class PhoenixExecutor implements VenueExecutor {
 
   async cancelAll(market: string): Promise<void> {
     if (this.dryRun) {
-      console.log(`[phoenix:dry] cancelAll ${market}`);
+      console.log(`[${this.id}:dry] cancelAll ${market}`);
       return;
     }
     const { client, authority } = this.ensureLive();
@@ -427,14 +430,22 @@ export class PhoenixExecutor implements VenueExecutor {
     await this.sendIxs([ix]);
   }
 
-  async closePosition(market: string): Promise<void> {
+  /** sizeBase 可选：只平指定数量（绝对值），默认全平。不撤挂单。 */
+  async closePosition(market: string, sizeBase?: number | null): Promise<void> {
     if (this.dryRun) {
-      console.log(`[phoenix:dry] closePosition ${market}`);
+      console.log(
+        `[${this.id}:dry] closePosition ${market}${sizeBase != null ? ` size=${sizeBase}` : ""}`
+      );
       return;
     }
     const snap = await this.snapshot(market);
     const abs = Math.abs(snap.position);
-    const size = roundLot(abs);
+    if (!(abs > 0)) return;
+    const target =
+      sizeBase != null && Number(sizeBase) > 0
+        ? Math.min(Math.abs(Number(sizeBase)), abs)
+        : abs;
+    const size = roundLot(target);
     if (!(size > 0)) return;
     const { client, authority } = this.ensureLive();
     const symbol = await this.resolveSymbol(market);

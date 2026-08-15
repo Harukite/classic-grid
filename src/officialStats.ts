@@ -1,5 +1,5 @@
 /**
- * 五所今日官方统计（成交量/手续费/平仓盈亏）。
+ * 六所今日官方统计（成交量/手续费/平仓盈亏）。
  * 拉得到则 source=official；失败时优先沿用同日上次成功结果（尤其 Extended 429），
  * 避免冲刷下单配额、也避免看板整行空白。
  */
@@ -389,18 +389,35 @@ async function fetchN1(sinceMs: number): Promise<OfficialVenueDay> {
   }
 }
 
-async function fetchPhoenix(since: number): Promise<OfficialVenueDay> {
+async function fetchPhoenix(
+  since: number,
+  venue: "phoenix" | "phoenix2" = "phoenix"
+): Promise<OfficialVenueDay> {
   try {
-    const api = (process.env.PHOENIX_API_URL || "https://perp-api.phoenix.trade").replace(
-      /\/$/,
-      ""
-    );
-    let authority = (process.env.PHOENIX_AUTHORITY || "").trim();
+    const api = (
+      (venue === "phoenix2"
+        ? process.env.PHOENIX2_API_URL || process.env.PHOENIX_API_URL
+        : process.env.PHOENIX_API_URL) || "https://perp-api.phoenix.trade"
+    ).replace(/\/$/, "");
+    let authority = (
+      venue === "phoenix2"
+        ? process.env.PHOENIX2_AUTHORITY || process.env.PHOENIX_AUTHORITY
+        : process.env.PHOENIX_AUTHORITY
+    )?.trim();
     if (!authority) {
       const keyPath =
-        process.env.PHOENIX_KEYPAIR_PATH?.trim() ||
-        path.resolve(process.cwd(), "secrets", "phoenix.key");
-      const envKey = process.env.PHOENIX_PRIVATE_KEY?.trim();
+        (venue === "phoenix2"
+          ? process.env.PHOENIX2_KEYPAIR_PATH?.trim()
+          : process.env.PHOENIX_KEYPAIR_PATH?.trim()) ||
+        path.resolve(
+          process.cwd(),
+          "secrets",
+          venue === "phoenix2" ? "phoenix2.key" : "phoenix.key"
+        );
+      const envKey =
+        venue === "phoenix2"
+          ? process.env.PHOENIX2_PRIVATE_KEY?.trim()
+          : process.env.PHOENIX_PRIVATE_KEY?.trim();
       if (envKey || fs.existsSync(keyPath)) {
         const { Keypair } = await import("@solana/web3.js");
         const bs58 = (await import("bs58")).default;
@@ -418,7 +435,14 @@ async function fetchPhoenix(since: number): Promise<OfficialVenueDay> {
         authority = Keypair.fromSecretKey(secret).publicKey.toBase58();
       }
     }
-    if (!authority) return empty("phoenix", "无 PHOENIX_AUTHORITY / secrets/phoenix.key");
+    if (!authority) {
+      return empty(
+        venue,
+        venue === "phoenix2"
+          ? "无 PHOENIX2_AUTHORITY / secrets/phoenix2.key"
+          : "无 PHOENIX_AUTHORITY / secrets/phoenix.key"
+      );
+    }
 
     let volume = 0;
     let fees = 0;
@@ -433,7 +457,7 @@ async function fetchPhoenix(since: number): Promise<OfficialVenueDay> {
         `${api}/v1/trader/${authority}/trades-history?${q.toString()}`
       );
       if (!r.ok) {
-        return empty("phoenix", `trades-history HTTP ${r.status}`);
+        return empty(venue, `trades-history HTTP ${r.status}`);
       }
       const body = (await r.json()) as any;
       const rows: any[] = body?.data || [];
@@ -471,7 +495,7 @@ async function fetchPhoenix(since: number): Promise<OfficialVenueDay> {
     } while (cursor && pages < 12);
 
     return {
-      venue: "phoenix",
+      venue,
       ok: true,
       source: "official",
       volume: round(volume, 2),
@@ -485,7 +509,204 @@ async function fetchPhoenix(since: number): Promise<OfficialVenueDay> {
       updatedAt: new Date().toISOString(),
     };
   } catch (e: any) {
-    return empty("phoenix", String(e?.message || e).slice(0, 120));
+    return empty(venue, String(e?.message || e).slice(0, 120));
+  }
+}
+
+async function fetchNado(since: number): Promise<OfficialVenueDay> {
+  try {
+    const { createNadoClient, CHAIN_ENV_TO_CHAIN } = await import("@nadohq/client");
+    const { removeDecimals } = await import("@nadohq/shared");
+    const { createPublicClient, createWalletClient, http } = await import("viem");
+    const { privateKeyToAccount } = await import("viem/accounts");
+
+    let owner = (process.env.NADO_ADDRESS || "").trim();
+    let walletClient: any = undefined;
+    const chain = CHAIN_ENV_TO_CHAIN.inkMainnet;
+    const rpc =
+      process.env.NADO_INK_RPC?.trim() ||
+      chain.rpcUrls.default.http[0] ||
+      "https://rpc-gel.inkonchain.com";
+    const publicClient = createPublicClient({ chain, transport: http(rpc) });
+
+    let rawKey = (process.env.NADO_PRIVATE_KEY || "").trim();
+    if (!rawKey) {
+      const keyPath =
+        process.env.NADO_KEY_PATH?.trim() ||
+        path.resolve(process.cwd(), "secrets", "nado.key");
+      if (fs.existsSync(keyPath)) rawKey = fs.readFileSync(keyPath, "utf8").trim();
+    }
+    if (rawKey) {
+      const pk = (rawKey.startsWith("0x") ? rawKey : `0x${rawKey}`) as `0x${string}`;
+      const account = privateKeyToAccount(pk);
+      owner = owner || account.address;
+      walletClient = createWalletClient({
+        account,
+        chain,
+        transport: http(rpc),
+      });
+    }
+    if (!owner) return empty("nado", "无 NADO_ADDRESS / secrets/nado.key");
+
+    const client = createNadoClient("inkMainnet", {
+      publicClient: publicClient as any,
+      ...(walletClient ? { walletClient: walletClient as any } : {}),
+    });
+    const indexer = (client as any).context.indexerClient;
+    const productId = Math.max(
+      1,
+      Number(process.env.NADO_BTC_PRODUCT_ID || 2) || 2
+    );
+    const subaccountName =
+      (process.env.NADO_SUBACCOUNT || "default").trim() || "default";
+
+    const hum = (v: unknown): number => {
+      if (v == null) return 0;
+      const n = Number(typeof (v as any)?.toString === "function" ? (v as any).toString() : v);
+      if (!Number.isFinite(n)) return 0;
+      if (Math.abs(n) >= 1e12) return Number(removeDecimals(n));
+      return n;
+    };
+
+    let volume = 0;
+    let fees = 0;
+    let realized = 0;
+    let fills = 0;
+    let closeFills = 0;
+    let cursor: string | undefined;
+    let pages = 0;
+
+    do {
+      const res = await indexer.getPaginatedSubaccountMatchEvents({
+        subaccountOwner: owner,
+        subaccountName,
+        productIds: [productId],
+        limit: 100,
+        startCursor: cursor,
+      });
+      const events: any[] = res?.events || [];
+      for (const e of events) {
+        const tsRaw = Number(e.timestamp?.toString?.() ?? e.timestamp);
+        if (!(Number.isFinite(tsRaw) && tsRaw > 0)) continue;
+        const tsMs = tsRaw > 1e12 ? tsRaw : tsRaw * 1000;
+        if (!(tsMs >= since)) continue;
+        const quote = Math.abs(hum(e.quoteFilled));
+        volume += quote;
+        fees += Math.abs(hum(e.totalFee));
+        realized += hum(e.realizedPnl);
+        fills += 1;
+        if (Math.abs(hum(e.closedAmount)) > 0) closeFills += 1;
+      }
+      cursor = res?.meta?.hasMore ? res.meta.nextCursor : undefined;
+      pages += 1;
+      if (!events.length) break;
+      const oldest = events.reduce((m, e) => {
+        const t = Number(e.timestamp?.toString?.() ?? e.timestamp);
+        const ms = t > 1e12 ? t : t * 1000;
+        return ms > 0 && ms < m ? ms : m;
+      }, Number.POSITIVE_INFINITY);
+      if (!(oldest >= since)) break;
+    } while (cursor && pages < 12);
+
+    return {
+      venue: "nado",
+      ok: true,
+      source: "official",
+      volume: round(volume, 2),
+      fees: round(fees, 4),
+      realizedPnl: round(realized, 4),
+      fills: fills > 0 ? fills : 0,
+      closeFills: closeFills > 0 ? closeFills : 0,
+      feeMaker: 0.0001,
+      feeTaker: null,
+      note: "indexer matches（quoteFilled+fee+realized_pnl）",
+      updatedAt: new Date().toISOString(),
+    };
+  } catch (e: any) {
+    return empty("nado", String(e?.message || e).slice(0, 120));
+  }
+}
+
+async function fetchPopdex(since: number): Promise<OfficialVenueDay> {
+  try {
+    loadEnv();
+    let addr = (process.env.POPDEX_ADDRESS || "").trim();
+    if (!addr) {
+      const keyPath =
+        process.env.POPDEX_KEY_PATH?.trim() ||
+        path.resolve(process.cwd(), "secrets", "popdex.key");
+      const raw =
+        (process.env.POPDEX_PRIVATE_KEY || "").trim() ||
+        (fs.existsSync(keyPath) ? fs.readFileSync(keyPath, "utf8").trim() : "");
+      if (!raw) return empty("popdex", "无 POPDEX_PRIVATE_KEY / secrets/popdex.key");
+      const { privateKeyToAccount } = await import("viem/accounts");
+      const pk = (raw.startsWith("0x") ? raw : `0x${raw}`) as `0x${string}`;
+      addr = privateKeyToAccount(pk).address;
+    }
+    let volume = 0;
+    let fees = 0;
+    let fills = 0;
+    let cursor = "";
+    for (let page = 0; page < 12; page++) {
+      const qs = new URLSearchParams({
+        category: "Futures",
+        symbol: "BTCUSDT",
+        limit: "100",
+        startTime: String(since),
+      });
+      if (cursor) qs.set("cursor", cursor);
+      const r = await fetch(
+        `https://api.popdex.xyz/api/v1/account/${addr}/trade/fills?${qs}`,
+        { headers: { "Content-Type": "application/json" } }
+      );
+      const j = (await r.json()) as any;
+      if (String(j.code) !== "200") {
+        return empty("popdex", String(j.msg || j.code || "fills fail").slice(0, 120));
+      }
+      const rows = Array.isArray(j.data) ? j.data : [];
+      if (!rows.length) break;
+      let oldest = Number.POSITIVE_INFINITY;
+      for (const t of rows) {
+        const ts = Number(t.createdAt ?? t.updatedAt ?? t.ts ?? 0);
+        if (ts > 0 && ts < oldest) oldest = ts;
+        if (ts > 0 && ts < since) continue;
+        const notional = Math.abs(
+          Number(
+            t.execValue ??
+              t.filledQuoteQty ??
+              t.quoteQty ??
+              (Number(t.execPrice ?? t.price) *
+                Number(t.execQty || t.filledQty || t.qty) ||
+                0)
+          )
+        );
+        if (Number.isFinite(notional)) volume += notional;
+        const feeArr = Array.isArray(t.feeDetail) ? t.feeDetail : [];
+        for (const f of feeArr) {
+          const fee = Number(f.fee ?? f.amount ?? 0);
+          if (Number.isFinite(fee)) fees += Math.abs(fee);
+        }
+        fills += 1;
+      }
+      cursor = j.cursor || "";
+      if (!cursor || !(oldest >= since)) break;
+    }
+    return {
+      venue: "popdex",
+      ok: true,
+      source: "official",
+      volume: round(volume, 2),
+      fees: round(fees, 4),
+      realizedPnl: null,
+      fills: fills > 0 ? fills : 0,
+      closeFills: null,
+      feeMaker: 0.00012,
+      feeTaker: 0.0004,
+      note: "account trade/fills",
+      updatedAt: new Date().toISOString(),
+    };
+  } catch (e: any) {
+    return empty("popdex", String(e?.message || e).slice(0, 120));
   }
 }
 
@@ -536,12 +757,15 @@ export async function refreshOfficialStats(opts?: {
     const dayKey = shanghaiDayKey();
     const since = dayStartMs(dayKey);
     const prev = cache;
-    const [extended, risex, decibel, n1, phoenix] = await Promise.all([
+    const [extended, risex, decibel, n1, phoenix, phoenix2, nado, popdex] = await Promise.all([
       fetchExtended(since),
       fetchRisex(since),
       fetchDecibel(since),
       fetchN1(since),
-      fetchPhoenix(since),
+      fetchPhoenix(since, "phoenix"),
+      fetchPhoenix(since, "phoenix2"),
+      fetchNado(since),
+      fetchPopdex(since),
     ]);
     cache = {
       dayKey,
@@ -552,6 +776,9 @@ export async function refreshOfficialStats(opts?: {
         decibel: keepOrFresh(dayKey, decibel, prev),
         n1: keepOrFresh(dayKey, n1, prev),
         phoenix: keepOrFresh(dayKey, phoenix, prev),
+        phoenix2: keepOrFresh(dayKey, phoenix2, prev),
+        nado: keepOrFresh(dayKey, nado, prev),
+        popdex: keepOrFresh(dayKey, popdex, prev),
       },
       updatedAt: new Date().toISOString(),
     };

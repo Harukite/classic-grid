@@ -190,7 +190,8 @@ export function matchLevelIndex(
       best = i;
     }
   }
-  if (bestDist > spacing * 0.4) return -1;
+  // 过宽会把「旧半幅/旧档距」残留单误认成当前格（Dec/N1 曾 73.8 与 80 混挂）
+  if (bestDist > spacing * 0.1) return -1;
   return best;
 }
 
@@ -225,6 +226,7 @@ export function planFromFillsAndSeed(p: {
   seeded: boolean;
   /** 达限后不再 place（如 RISEx 50/市场） */
   maxOpenOrders?: number;
+  skipBand?: number;
 }): {
   intents: Intent[];
   nextActive: Map<string, { levelIndex: number; side: Side; price: number; size: number }>;
@@ -309,16 +311,23 @@ export function planFromFillsAndSeed(p: {
     occupied.add(repl.levelIndex);
   }
 
-  // 首次或漏档：用 seed 补齐（开仓腿），不重复 level
-  if (!p.seeded || filled.length === 0) {
+  // 本轮已成交的档：禁止 seed 在同档挂反向（否则 mid 微穿会同价开平，只亏手续费）
+  const filledLevelSide = new Map<number, Side>();
+  for (const f of filled) filledLevelSide.set(f.levelIndex, f.side);
+
+  // 每轮都补漏档（原先仅在「本轮无成交」时 seed，行情活跃时近价空洞会一直空着）
+  {
     const seeds = seedOrders({
       levels: p.levels,
       price: p.mid,
       mode: p.mode,
       spacing: p.spacing,
+      skipBand: p.skipBand,
     });
     for (const s of seeds) {
       if (occupied.has(s.levelIndex)) continue;
+      const opened = filledLevelSide.get(s.levelIndex);
+      if (opened && opened !== s.side) continue;
       if (
         !pushPlace({
           market: p.market,

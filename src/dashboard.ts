@@ -6,8 +6,18 @@ import {
   ingestVenuesForLedger,
   ledgerPublicView,
   loadLedger,
+  applyCapitalFlow,
+  recordOfficialDayVolume,
+  patchOfficialVolumeForDay,
+  trimLedgerCalendar,
 } from "./ledger.js";
 import type { OfficialBundle } from "./officialStats.js";
+import {
+  getBotPauseState,
+  loadBotPauseState,
+  setBotPaused,
+  type BotPauseState,
+} from "./botControl.js";
 
 export type DashboardVenueRow = {
   venue: string;
@@ -42,6 +52,9 @@ export type DashboardSnapshot = {
   startedAt: string;
   updatedAt: string;
   dryRun: boolean;
+  /** 紧急暂停：不下单/不撤单/不补单，仅刷新看板只读 */
+  paused: boolean;
+  pausedAt?: string;
   venues: DashboardVenueRow[];
   ledger?: ReturnType<typeof ledgerPublicView>;
   official?: OfficialBundle | null;
@@ -50,19 +63,34 @@ export type DashboardSnapshot = {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.resolve(__dirname, "..", "public");
 
+loadBotPauseState();
+
 let snapshot: DashboardSnapshot = {
   startedAt: new Date().toISOString(),
   updatedAt: new Date().toISOString(),
   dryRun: true,
+  paused: getBotPauseState().paused,
+  pausedAt: getBotPauseState().paused ? getBotPauseState().updatedAt : undefined,
   venues: [],
   ledger: ledgerPublicView(loadLedger()),
 };
+
+function syncPauseIntoSnapshot(): void {
+  const p = getBotPauseState();
+  snapshot = {
+    ...snapshot,
+    paused: p.paused,
+    pausedAt: p.paused ? p.updatedAt : undefined,
+    updatedAt: new Date().toISOString(),
+  };
+}
 
 export function getDashboardSnapshot(): DashboardSnapshot {
   return snapshot;
 }
 
 export function setDashboardMeta(p: { dryRun: boolean }): void {
+  syncPauseIntoSnapshot();
   snapshot = {
     ...snapshot,
     dryRun: p.dryRun,
@@ -71,10 +99,37 @@ export function setDashboardMeta(p: { dryRun: boolean }): void {
   };
 }
 
+export function applyBotPause(paused: boolean, reason?: string): BotPauseState {
+  const next = setBotPaused(paused, reason);
+  syncPauseIntoSnapshot();
+  persistStatus();
+  return next;
+}
+
 export function setDashboardOfficial(official: OfficialBundle | null): void {
+  let ledger = snapshot.ledger || ledgerPublicView(loadLedger());
+  if (official?.venues) {
+    let sum = 0;
+    let n = 0;
+    for (const o of Object.values(official.venues)) {
+      if (!o || o.source !== "official") continue;
+      if (o.volume != null && Number.isFinite(Number(o.volume))) {
+        sum += Number(o.volume);
+        n += 1;
+      }
+    }
+    if (n > 0) {
+      try {
+        ledger = ledgerPublicView(recordOfficialDayVolume(sum));
+      } catch {
+        /* ignore */
+      }
+    }
+  }
   snapshot = {
     ...snapshot,
     official,
+    ledger,
     updatedAt: new Date().toISOString(),
   };
   persistStatus();
@@ -118,9 +173,10 @@ export function startDashboardServer(port: number): http.Server | null {
   const server = http.createServer((req, res) => {
     const url = req.url?.split("?")[0] || "/";
     if (url === "/api/snapshot" || url === "/api/status" || url === "/api/overview") {
+      syncPauseIntoSnapshot();
       const body = {
         ...snapshot,
-        ledger: snapshot.ledger || ledgerPublicView(loadLedger()),
+        ledger: ledgerPublicView(loadLedger()),
       };
       res.writeHead(200, {
         "Content-Type": "application/json; charset=utf-8",
@@ -132,6 +188,194 @@ export function startDashboardServer(port: number): http.Server | null {
     if (url === "/api/meta") {
       res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
       res.end(JSON.stringify({ authRequired: false, port }));
+      return;
+    }
+    if (
+      (url === "/api/pause" || url === "/api/resume" || url === "/api/bot-pause") &&
+      req.method === "POST"
+    ) {
+      const chunks: Buffer[] = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", () => {
+        let reason: string | undefined;
+        try {
+          const raw = Buffer.concat(chunks).toString("utf8");
+          if (raw) {
+            const j = JSON.parse(raw);
+            if (j?.reason) reason = String(j.reason);
+            if (url === "/api/bot-pause" && typeof j?.paused === "boolean") {
+              const st = applyBotPause(j.paused, reason || "dashboard");
+              res.writeHead(200, {
+                "Content-Type": "application/json; charset=utf-8",
+                "Cache-Control": "no-store",
+              });
+              res.end(JSON.stringify({ ok: true, ...st }));
+              return;
+            }
+          }
+        } catch {
+          /* ignore body */
+        }
+        const wantPause = url === "/api/pause";
+        const st = applyBotPause(wantPause, reason || "dashboard");
+        res.writeHead(200, {
+          "Content-Type": "application/json; charset=utf-8",
+          "Cache-Control": "no-store",
+        });
+        res.end(JSON.stringify({ ok: true, ...st }));
+      });
+      return;
+    }
+    if (url === "/api/capital-flow" && req.method === "POST") {
+      const chunks: Buffer[] = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", () => {
+        try {
+          const raw = Buffer.concat(chunks).toString("utf8") || "{}";
+          const j = JSON.parse(raw);
+          const items = Array.isArray(j?.flows)
+            ? j.flows
+            : [
+                {
+                  venue: j?.venue,
+                  amount:
+                    j?.amount != null
+                      ? Number(j.amount)
+                      : j?.withdraw != null
+                        ? -Math.abs(Number(j.withdraw))
+                        : j?.deposit != null
+                          ? Math.abs(Number(j.deposit))
+                          : NaN,
+                  note: j?.note,
+                },
+              ];
+          const applied = [];
+          for (const it of items) {
+            const venue = String(it?.venue || "manual");
+            let amount = Number(it?.amount);
+            if (!Number.isFinite(amount) && it?.withdraw != null) {
+              amount = -Math.abs(Number(it.withdraw));
+            }
+            if (!Number.isFinite(amount) && it?.deposit != null) {
+              amount = Math.abs(Number(it.deposit));
+            }
+            const st = applyCapitalFlow({
+              venue,
+              amount,
+              note: it?.note ? String(it.note) : undefined,
+            });
+            applied.push({
+              venue,
+              amount,
+              dayProfit: st.calendar[0]?.dayProfit,
+              dayOpenEquity: st.dayOpenEquity,
+            });
+          }
+          const view = ledgerPublicView();
+          // 刷新看板里的 ledger 视图
+          snapshot = {
+            ...snapshot,
+            ledger: view,
+            updatedAt: new Date().toISOString(),
+          };
+          persistStatus();
+          res.writeHead(200, {
+            "Content-Type": "application/json; charset=utf-8",
+            "Cache-Control": "no-store",
+          });
+          res.end(JSON.stringify({ ok: true, applied, ledger: view }));
+        } catch (e: any) {
+          res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+          res.end(
+            JSON.stringify({
+              ok: false,
+              error: String(e?.message || e).slice(0, 240),
+            })
+          );
+        }
+      });
+      return;
+    }
+    if (url === "/api/ledger/official-volume" && req.method === "POST") {
+      const chunks: Buffer[] = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", () => {
+        try {
+          const raw = Buffer.concat(chunks).toString("utf8") || "{}";
+          const j = JSON.parse(raw);
+          const items = Array.isArray(j?.days)
+            ? j.days
+            : [{ day: j?.day, volume: j?.volume }];
+          const applied = [];
+          for (const it of items) {
+            const day = String(it?.day || "");
+            const volume = Number(it?.volume);
+            const st = patchOfficialVolumeForDay(day, volume);
+            const row = st.calendar.find((d) => d.day === day);
+            applied.push({ day, volume: row?.officialVolume ?? volume });
+          }
+          const view = ledgerPublicView();
+          snapshot = {
+            ...snapshot,
+            ledger: view,
+            updatedAt: new Date().toISOString(),
+          };
+          persistStatus();
+          res.writeHead(200, {
+            "Content-Type": "application/json; charset=utf-8",
+            "Cache-Control": "no-store",
+          });
+          res.end(JSON.stringify({ ok: true, applied, ledger: view }));
+        } catch (e: any) {
+          res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+          res.end(
+            JSON.stringify({
+              ok: false,
+              error: String(e?.message || e).slice(0, 240),
+            })
+          );
+        }
+      });
+      return;
+    }
+    if (url === "/api/ledger/calendar-trim" && req.method === "POST") {
+      const chunks: Buffer[] = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", () => {
+        try {
+          const raw = Buffer.concat(chunks).toString("utf8") || "{}";
+          const j = JSON.parse(raw);
+          const from = String(j?.from || j?.keepFrom || "");
+          const st = trimLedgerCalendar(from);
+          const view = ledgerPublicView(st);
+          snapshot = {
+            ...snapshot,
+            ledger: view,
+            updatedAt: new Date().toISOString(),
+          };
+          persistStatus();
+          res.writeHead(200, {
+            "Content-Type": "application/json; charset=utf-8",
+            "Cache-Control": "no-store",
+          });
+          res.end(
+            JSON.stringify({
+              ok: true,
+              from,
+              days: view.calendar.map((d) => d.day),
+              ledger: view,
+            })
+          );
+        } catch (e: any) {
+          res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+          res.end(
+            JSON.stringify({
+              ok: false,
+              error: String(e?.message || e).slice(0, 240),
+            })
+          );
+        }
+      });
       return;
     }
     if (url === "/" || url === "/index.html") {

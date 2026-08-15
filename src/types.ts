@@ -1,4 +1,12 @@
-export type VenueId = "extended" | "risex" | "decibel" | "n1" | "phoenix";
+export type VenueId =
+  | "extended"
+  | "risex"
+  | "decibel"
+  | "n1"
+  | "phoenix"
+  | "phoenix2"
+  | "nado"
+  | "popdex";
 export type Side = "buy" | "sell";
 export type GridMode = "neutral" | "long" | "short";
 
@@ -52,8 +60,6 @@ export type VenueSnapshot = {
   openOrders: LiveOrder[];
   /** 官方未实现盈亏（所方字段/均价×标记）；读不到则省略，看板显示 - */
   unrealizedPnl?: number;
-  /** 官方爆仓价；读不到则省略 */
-  liquidationPrice?: number;
   /** 账户权益（USD）；读不到则为 undefined */
   equityUsd?: number;
 };

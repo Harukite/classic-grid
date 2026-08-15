@@ -10,18 +10,22 @@ export type LedgerDay = {
   gridProfit: number;
   /** 今日赚/亏 = 总余额 − 日切开盘总余额（交易所权益） */
   dayProfit: number;
-  /** 当日估计成交名义：Σ Δrungs × size × mid（仅参考） */
+  /** @deprecated 本地完成格估算；看板成交量一律用 officialVolume */
   todayVolume: number;
-  /**
-   * 官方成交量累计（各所 officialVolume 之和）。
-   * 只增不减，避免 429/缺所把历史刷低；日切后留在昨日行。
-   */
+  /** 各所官方今日成交名义合计（Asia/Shanghai 日切） */
   officialVolume?: number;
-  /** 官方手续费累计（同上） */
-  officialFees?: number;
   equity: number;
   equityChange: number;
   updatedAt: string;
+};
+
+export type CapitalFlow = {
+  day: string;
+  venue: string;
+  /** 对账户权益的符号影响：入金为正，出金/提现为负 */
+  amount: number;
+  at: string;
+  note?: string;
 };
 
 export type LedgerState = {
@@ -35,6 +39,8 @@ export type LedgerState = {
    * 避免「今日盈亏」被新入金抬高。
    */
   venuesInOpenEquity?: string[];
+  /** 出入金流水（已同步调整 dayOpenEquity，不进今日盈亏） */
+  capitalFlows?: CapitalFlow[];
   calendar: LedgerDay[];
   /** venue -> last seen counters */
   last: Record<
@@ -45,6 +51,8 @@ export type LedgerState = {
       unrealizedPnl: number;
       mid: number;
       sizeBase: number;
+      /** 最近一次计入总权益的权益，所退出时用于扣开盘基准 */
+      equityUsd?: number;
     }
   >;
   combined: {
@@ -96,6 +104,7 @@ function emptyState(): LedgerState {
     dayKey,
     dayOpenProfit: null,
     dayOpenEquity: null,
+    capitalFlows: [],
     calendar: [
       {
         day: dayKey,
@@ -110,7 +119,7 @@ function emptyState(): LedgerState {
     last: {},
     combined: {
       todayVolume: 0,
-      volumeWindow: "网格估计：完成格 × size × mid · Asia/Shanghai 日切",
+      volumeWindow: "官方各所今日成交合计 · Asia/Shanghai 日切",
     },
   };
 }
@@ -123,6 +132,7 @@ export function loadLedger(): LedgerState {
     const parsed = JSON.parse(raw) as LedgerState;
     if (!parsed || !Array.isArray(parsed.calendar)) return emptyState();
     if (parsed.dayOpenEquity === undefined) parsed.dayOpenEquity = null;
+    if (!Array.isArray(parsed.capitalFlows)) parsed.capitalFlows = [];
     return parsed;
   } catch {
     return emptyState();
@@ -135,20 +145,97 @@ function saveLedger(state: LedgerState): void {
   fs.writeFileSync(LEDGER_PATH(), JSON.stringify(state, null, 2), "utf8");
 }
 
+/** 当日出入金净值：入金为正、提现为负（对权益的影响） */
+export function capitalFlowNetForDay(
+  state: LedgerState,
+  day = state.dayKey || shanghaiDayKey()
+): number {
+  let n = 0;
+  for (const f of state.capitalFlows || []) {
+    if (f.day !== day) continue;
+    const a = Number(f.amount);
+    if (Number.isFinite(a)) n += a;
+  }
+  return round(n);
+}
+
+/**
+ * 登记出入金：同步调整 dayOpenEquity，使今日盈亏不含资金进出。
+ * amount：入金为正，提现/出金为负。
+ */
+export function applyCapitalFlow(input: {
+  venue: string;
+  amount: number;
+  note?: string;
+}): LedgerState {
+  const state = loadLedger();
+  if (!Array.isArray(state.capitalFlows)) state.capitalFlows = [];
+  const today = ensureToday(state);
+  const amount = round(Number(input.amount));
+  if (!Number.isFinite(amount) || amount === 0) {
+    throw new Error("capital flow amount 必须是非 0 数字（入金为正，提现为负）");
+  }
+  const venue = String(input.venue || "manual").trim() || "manual";
+  const day = state.dayKey || shanghaiDayKey();
+  const note = input.note ? String(input.note).slice(0, 200) : undefined;
+
+  // 同日同所同金额同备注 → 视为已登记，避免重复扣基准
+  const dup = (state.capitalFlows || []).some(
+    (f) =>
+      f.day === day &&
+      f.venue === venue &&
+      Number(f.amount) === amount &&
+      (f.note || "") === (note || "")
+  );
+  if (dup) {
+    console.log(`[ledger] capital flow skip duplicate ${venue} ${amount}`);
+    return state;
+  }
+
+  state.capitalFlows.push({
+    day,
+    venue,
+    amount,
+    at: new Date().toISOString(),
+    note,
+  });
+
+  if (state.dayOpenEquity == null) {
+    state.dayOpenEquity = Number(today.equity) || 0;
+  }
+  state.dayOpenEquity = round(Number(state.dayOpenEquity) + amount);
+
+  const net = capitalFlowNetForDay(state, day);
+  today.dayProfit = round(Number(today.equity) - Number(state.dayOpenEquity));
+  const yesterday = state.calendar.find((d) => d.day !== today.day);
+  if (yesterday && Number(yesterday.equity) > 0) {
+    today.equityChange = round(
+      Number(today.equity) - Number(yesterday.equity) - net
+    );
+  } else {
+    today.equityChange = today.dayProfit;
+  }
+  today.updatedAt = new Date().toISOString();
+  state.calendar = [today, ...state.calendar.filter((d) => d.day !== today.day)];
+  saveLedger(state);
+  console.log(
+    `[ledger] capital flow ${venue} ${amount > 0 ? "+" : ""}${amount}U → open=${Number(
+      state.dayOpenEquity
+    ).toFixed(2)} dayProfit=${today.dayProfit}`
+  );
+  return state;
+}
+
 function ensureToday(state: LedgerState): LedgerDay {
   const dayKey = shanghaiDayKey();
   if (state.dayKey !== dayKey) {
     // 日切：固化昨日，开新日
-    // 先记下昨有哪些所，避免 last 清空后晚连上的所被当成「新入金」叠进开盘基准
-    const prevVenueKeys = Object.keys(state.last || {});
     state.dayKey = dayKey;
     state.last = {};
     state.combined.todayVolume = 0;
     state.dayOpenProfit = null;
     state.dayOpenEquity = null;
-    // null=未初始化；勿用 []，否则会走「新所并入」把全所权益再加一遍
-    state.venuesInOpenEquity = undefined;
-    (state as any)._rolloverVenueKeys = prevVenueKeys;
+    state.venuesInOpenEquity = [];
     const prev = state.calendar[0];
     state.calendar.unshift({
       day: dayKey,
@@ -225,69 +312,63 @@ export function ingestVenuesForLedger(venues: DashboardVenueRow[]): LedgerState 
       unrealizedPnl: upnl,
       mid,
       sizeBase: size,
+      equityUsd:
+        Number.isFinite(eq) && eq > 0
+          ? eq
+          : Number(prev?.equityUsd) > 0
+            ? Number(prev?.equityUsd)
+            : undefined,
     };
   }
 
-  today.todayVolume = round(today.todayVolume + volDelta);
-  state.combined.todayVolume = today.todayVolume;
+  // 所从看板消失（暂停/下线）：从开盘基准扣回其上次权益，避免今日盈亏被坑成大负
+  if (
+    state.dayOpenEquity != null &&
+    Array.isArray(state.venuesInOpenEquity) &&
+    state.venuesInOpenEquity.length
+  ) {
+    const present = new Set(venues.map((v) => v.venue));
+    const keep: string[] = [];
+    for (const id of state.venuesInOpenEquity) {
+      if (present.has(id)) {
+        keep.push(id);
+        continue;
+      }
+      const lastEq = Number(state.last[id]?.equityUsd);
+      if (Number.isFinite(lastEq) && lastEq > 0) {
+        state.dayOpenEquity = round(Number(state.dayOpenEquity) - lastEq);
+        console.log(
+          `[ledger] 所退出 ${id} 扣开盘基准 ${lastEq.toFixed(2)}U → open=${Number(
+            state.dayOpenEquity
+          ).toFixed(2)}`
+        );
+      } else {
+        console.log(
+          `[ledger] 所退出 ${id} 无上次权益记录，未改开盘基准（需人工核对）`
+        );
+      }
+      delete state.last[id];
+    }
+    state.venuesInOpenEquity = keep;
+  }
+
+  // 本地完成格估算不再写入对外成交量（看板/TG/日历一律官方）
+  void volDelta;
+
   // 参考毛利只增不减（防重启写回低于已记账）
   today.gridProfit = round(Math.max(today.gridProfit || 0, totalProfit));
-
-  // 官方量/费：只升不降，日切后留在昨日日历（看板「今日」与历史口径一致）
-  let offVol = 0;
-  let offFees = 0;
-  let offVolN = 0;
-  let offFeeN = 0;
-  for (const v of venues) {
-    if (v.officialVolume != null && Number.isFinite(Number(v.officialVolume))) {
-      offVol += Number(v.officialVolume);
-      offVolN += 1;
-    }
-    if (v.officialFees != null && Number.isFinite(Number(v.officialFees))) {
-      offFees += Number(v.officialFees);
-      offFeeN += 1;
-    }
-  }
-  if (offVolN > 0) {
-    today.officialVolume = round(
-      Math.max(Number(today.officialVolume) || 0, offVol)
-    );
-  }
-  if (offFeeN > 0) {
-    today.officialFees = round(
-      Math.max(Number(today.officialFees) || 0, offFees)
-    );
-  }
 
   const yesterday = state.calendar.find((d) => d.day !== today.day);
   if (equityCount > 0) {
     today.equity = round(totalEquity);
 
-    const knownVenueIds = [
-      "extended",
-      "risex",
-      "decibel",
-      "n1",
-      "phoenix",
-      ...venues.map((v) => v.venue),
-      ...(((state as any)._rolloverVenueKeys as string[]) || []),
-    ];
-
-    // 旧账本无 venuesInOpenEquity：先按 last 里「非本次新入金所」占位
+    // 旧账本无 venuesInOpenEquity：先按 last 里「非本次新入金所」占位，
+    // 再让下面的新所逻辑把 phoenix 等入金并入开盘基准（只补一次）。
     if (!Array.isArray(state.venuesInOpenEquity)) {
       const known = Object.keys(state.last || {});
-      state.venuesInOpenEquity = known.filter((k) => k !== "phoenix");
-    }
-
-    // 空名单 + 已有开盘基准：只是日切/重启后晚连上，补名单，禁止再叠权益
-    if (
-      state.dayOpenEquity != null &&
-      Array.isArray(state.venuesInOpenEquity) &&
-      state.venuesInOpenEquity.length === 0
-    ) {
-      state.venuesInOpenEquity = [...new Set(knownVenueIds)];
-      console.log(
-        `[ledger] 开盘名单为空，已按已知所补齐（不叠权益） dayOpen=${Number(state.dayOpenEquity).toFixed(2)}`
+      // 若 phoenix 已在 last，仍视为未计入开盘（今日中途接入），需并入基准
+      state.venuesInOpenEquity = known.filter(
+        (k) => k !== "phoenix" && k !== "phoenix2"
       );
     }
 
@@ -295,26 +376,23 @@ export function ingestVenuesForLedger(venues: DashboardVenueRow[]): LedgerState 
       // 优先用昨日收盘权益作今日开盘；没有则冻结当前权益（当日差从 0 起）
       if (yesterday && Number(yesterday.equity) > 0) {
         state.dayOpenEquity = Number(yesterday.equity);
-        // 昨收已是全账户口径：今日各所均视为已在基准内，禁止晚连上再叠加
-        state.venuesInOpenEquity = [...new Set(knownVenueIds)];
       } else {
         state.dayOpenEquity = today.equity;
-        state.venuesInOpenEquity = venues
-          .filter((v) => {
-            const e = Number(v.equityUsd);
-            return Number.isFinite(e) && e > 0;
-          })
-          .map((v) => v.venue);
       }
-      delete (state as any)._rolloverVenueKeys;
+      state.venuesInOpenEquity = venues
+        .filter((v) => {
+          const e = Number(v.equityUsd);
+          return Number.isFinite(e) && e > 0;
+        })
+        .map((v) => v.venue);
     } else {
       for (const v of venues) {
         const eq = Number(v.equityUsd);
         if (!(Number.isFinite(eq) && eq > 0)) continue;
-        if (state.venuesInOpenEquity!.includes(v.venue)) continue;
+        if (state.venuesInOpenEquity.includes(v.venue)) continue;
         // 新所当日入账（含入金）：并入开盘基准，不进今日盈亏
         state.dayOpenEquity = round(Number(state.dayOpenEquity) + eq);
-        state.venuesInOpenEquity!.push(v.venue);
+        state.venuesInOpenEquity.push(v.venue);
         console.log(
           `[ledger] 新所 ${v.venue} 权益 ${eq.toFixed(2)}U 并入开盘基准（不计今日盈亏）`
         );
@@ -322,8 +400,12 @@ export function ingestVenuesForLedger(venues: DashboardVenueRow[]): LedgerState 
     }
 
     today.dayProfit = round(today.equity - state.dayOpenEquity);
+    const flowNet = capitalFlowNetForDay(state, today.day);
     if (yesterday && Number(yesterday.equity) > 0) {
-      today.equityChange = round(today.equity - Number(yesterday.equity));
+      // 相对昨日余额变化，剔除出入金
+      today.equityChange = round(
+        today.equity - Number(yesterday.equity) - flowNet
+      );
     } else {
       today.equityChange = today.dayProfit;
     }
@@ -337,18 +419,93 @@ export function ingestVenuesForLedger(venues: DashboardVenueRow[]): LedgerState 
 }
 
 export function ledgerPublicView(state: LedgerState = loadLedger()) {
+  const dayKey = state.dayKey || shanghaiDayKey();
+  const flowNet = capitalFlowNetForDay(state, dayKey);
+  const flowsToday = (state.capitalFlows || []).filter((f) => f.day === dayKey);
   return {
-    dayKey: state.dayKey || shanghaiDayKey(),
-    calendar: state.calendar.map((d) => ({
-      day: d.day,
-      todayVolume: d.todayVolume,
-      officialVolume: d.officialVolume ?? null,
-      officialFees: d.officialFees ?? null,
-      equity: d.equity,
-      equityChange: d.equityChange,
-      dayProfit: d.dayProfit,
-      gridProfit: d.gridProfit,
-    })),
+    dayKey,
+    capitalFlowNet: flowNet,
+    capitalFlowsToday: flowsToday,
+    calendar: state.calendar.map((d) => {
+      const official =
+        d.officialVolume != null && Number.isFinite(Number(d.officialVolume))
+          ? Number(d.officialVolume)
+          : null;
+      return {
+        day: d.day,
+        /** 对外只暴露官方量；无官方则为 null（禁止回退本地估算） */
+        todayVolume: official,
+        officialVolume: official,
+        volume: official,
+        equity: d.equity,
+        equityChange: d.equityChange,
+        dayProfit: d.dayProfit,
+        gridProfit: d.gridProfit,
+      };
+    }),
     combined: state.combined,
   };
+}
+
+/** 用官方今日成交合计写入当日日历（看板专用；不动网格） */
+export function recordOfficialDayVolume(totalVolume: number): LedgerState {
+  const state = loadLedger();
+  const today = ensureToday(state);
+  if (Number.isFinite(totalVolume) && totalVolume >= 0) {
+    today.officialVolume = round(totalVolume);
+    // combined.todayVolume 对外也跟官方，避免别处再读到本地估算
+    state.combined.todayVolume = today.officialVolume;
+    state.combined.volumeWindow = "官方各所今日成交合计 · Asia/Shanghai 日切";
+    today.updatedAt = new Date().toISOString();
+    state.calendar = [today, ...state.calendar.filter((d) => d.day !== today.day)];
+    saveLedger(state);
+  }
+  return state;
+}
+
+/** 回填历史某日官方成交量（仅看板账本） */
+export function patchOfficialVolumeForDay(day: string, volume: number): LedgerState {
+  const state = loadLedger();
+  ensureToday(state);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error("bad day");
+  if (!(Number.isFinite(volume) && volume >= 0)) throw new Error("bad volume");
+  let row = state.calendar.find((d) => d.day === day);
+  if (!row) {
+    row = {
+      day,
+      gridProfit: 0,
+      dayProfit: 0,
+      todayVolume: 0,
+      equity: 0,
+      equityChange: 0,
+      updatedAt: new Date().toISOString(),
+    };
+    state.calendar.push(row);
+  }
+  row.officialVolume = round(volume);
+  row.updatedAt = new Date().toISOString();
+  state.calendar = [
+    ...state.calendar.filter((d) => d.day === state.dayKey),
+    ...state.calendar
+      .filter((d) => d.day !== state.dayKey)
+      .sort((a, b) => b.day.localeCompare(a.day)),
+  ];
+  saveLedger(state);
+  return state;
+}
+
+/** 日历只保留 keepFromDay（含）之后的日期 */
+export function trimLedgerCalendar(keepFromDay: string): LedgerState {
+  const state = loadLedger();
+  ensureToday(state);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(keepFromDay)) throw new Error("bad day");
+  state.calendar = state.calendar
+    .filter((d) => String(d.day) >= keepFromDay)
+    .sort((a, b) => {
+      if (a.day === state.dayKey) return -1;
+      if (b.day === state.dayKey) return 1;
+      return b.day.localeCompare(a.day);
+    });
+  saveLedger(state);
+  return state;
 }

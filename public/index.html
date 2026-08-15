@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#0d1117" />
-  <title>五所网格总看板 · 8088</title>
+  <title>六所网格总看板 · 8088</title>
   <style>
     :root {
       --bg: #0d1117;
@@ -46,6 +46,38 @@
     .pill.live { color: var(--green); border-color: #238636; }
     .pill.dry { color: var(--yellow); border-color: #9e6a03; }
     .pill.offok { color: var(--blue); border-color: #1f6feb; }
+    .pill.paused { color: #fff; background: #8b1a1a; border-color: #f85149; }
+    .btn-panic {
+      margin-left: auto;
+      border: 1px solid #f85149;
+      background: #3a1618;
+      color: #ff7b72;
+      font-weight: 800;
+      font-size: 13px;
+      padding: 8px 14px;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    .btn-panic:hover { background: #5a1e22; color: #fff; }
+    .btn-panic:disabled { opacity: 0.55; cursor: wait; }
+    .btn-resume {
+      border: 1px solid #238636;
+      background: #14351f;
+      color: var(--green);
+      font-weight: 800;
+      font-size: 13px;
+      padding: 8px 14px;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    .btn-resume:hover { background: #1a4d28; }
+    .btn-resume:disabled { opacity: 0.55; cursor: wait; }
+    .pause-banner {
+      display: none; padding: 12px 14px; margin-bottom: 14px;
+      border: 1px solid #f85149; border-radius: 12px;
+      color: #ff7b72; background: #3a1618; font-weight: 700;
+    }
+    .pause-banner.on { display: block; }
     main { max-width: 1280px; margin: 0 auto; padding: 18px; }
     .section-title {
       margin: 28px 0 14px;
@@ -55,7 +87,6 @@
       line-height: 1.2;
     }
     .section-title.t-overview { color: #58a6ff; }
-    .section-title.t-today { color: #3fb950; }
     .section-title.t-venues { color: #d29922; }
     .section-title.t-cal { color: #39c5cf; }
     .kpis { display: grid; grid-template-columns: repeat(3, minmax(140px, 1fr)); gap: 12px; }
@@ -153,6 +184,32 @@
       box-shadow: 0 0 8px rgba(255, 214, 102, 0.7);
       z-index: 3;
     }
+    .ladder-anchor {
+      position: absolute;
+      top: 0; bottom: 0;
+      width: 3px;
+      margin-left: -1px;
+      background: #3fb950;
+      box-shadow: 0 0 8px rgba(63, 185, 80, 0.65);
+      z-index: 3;
+    }
+    .ladder-anchor.near-mid {
+      /* 与 mid 几乎重合时略加宽，仍能辨认 */
+      width: 5px;
+      margin-left: -2px;
+      opacity: 0.85;
+    }
+    .ladder-legend {
+      display: flex; flex-wrap: wrap; gap: 10px 16px;
+      margin-top: 6px; color: var(--mut); font-size: 11px;
+      font-variant-numeric: tabular-nums;
+    }
+    .ladder-legend i {
+      display: inline-block; width: 10px; height: 10px;
+      border-radius: 2px; margin-right: 4px; vertical-align: -1px;
+    }
+    .ladder-legend .lg-mid { background: #ffd666; }
+    .ladder-legend .lg-anchor { background: #3fb950; }
     .ladder-axis {
       display: flex; justify-content: space-between;
       margin-top: 8px; color: var(--mut); font-size: 11px;
@@ -172,12 +229,16 @@
 <body>
   <header>
     <span id="dot" class="dot"></span>
-    <h1>五所网格总看板</h1>
+    <h1>六所网格总看板</h1>
     <span id="mode" class="pill dry">…</span>
+    <span id="pausePill" class="pill" style="display:none">暂停中</span>
     <span id="offPill" class="pill">数据…</span>
     <span id="time" class="meta">等待数据</span>
+    <button type="button" id="btnPause" class="btn-panic" title="停止机器人一切下单/撤单/补单">紧急暂停</button>
+    <button type="button" id="btnResume" class="btn-resume" style="display:none" title="恢复机器人自动网格">恢复运行</button>
   </header>
   <main>
+    <div id="pauseBanner" class="pause-banner">紧急暂停中：机器人已停止操作。请自行到各所撤单/平仓；完成后再点「恢复运行」。</div>
     <div id="alert" class="alert"></div>
 
     <p class="section-title t-overview">总览</p>
@@ -195,12 +256,7 @@
       <div class="kpi">
         <label>今日成交量</label>
         <div id="kVol" class="value">-</div>
-        <div id="kVolSub" class="sub">各所合计</div>
-      </div>
-      <div class="kpi">
-        <label>今日手续费</label>
-        <div id="kFees" class="value">-</div>
-        <div id="kFeesSub" class="sub">各所合计</div>
+        <div id="kVolSub" class="sub">官方各所合计</div>
       </div>
       <div class="kpi">
         <label>挂单合计</label>
@@ -214,23 +270,20 @@
       </div>
     </section>
 
-    <p class="section-title t-venues">五所汇总</p>
-    <p class="meta" style="margin:-6px 0 4px">状态 + 官方今日明细；爆仓价有官方则显示，无则 -</p>
+    <p class="section-title t-venues">六所状态汇总</p>
     <div class="scroll">
       <table class="table">
         <thead>
           <tr>
-            <th>交易所</th><th>状态</th><th>方向</th><th>仓位(U)</th>
-            <th>挂单</th><th>mid</th><th>爆仓价</th><th>权益</th>
-            <th>浮盈亏</th><th>成交量</th><th>手续费</th>
-            <th>平仓盈亏</th><th>成交笔</th><th>完成格</th><th>备注</th>
+            <th>交易所</th><th>状态</th><th>方向</th><th>仓位(U)</th><th>完成格</th>
+            <th>挂单</th><th>mid</th><th>权益</th><th>今日成交量</th><th>格数</th><th>浮盈亏(官方)</th><th>备注</th>
           </tr>
         </thead>
         <tbody id="venueRows"></tbody>
       </table>
     </div>
     <p class="section-title t-ladder">挂单档位分布</p>
-    <p class="meta" style="margin:-6px 0 4px">横轴=价格 · 蓝线=挂单价 · 黄线=mid · 黄块=档距空洞（不均匀）</p>
+    <p class="meta" style="margin:-6px 0 4px">横轴=价格 · 蓝线=挂单 · <span style="color:#ffd666">黄线=当前价 mid</span> · <span style="color:#3fb950">绿线=铺单锚点</span> · 黄块=档距空洞</p>
     <div id="venueLadders" class="ladders"></div>
 
     <p class="section-title t-cal">日历</p>
@@ -241,7 +294,6 @@
           <tr>
             <th>日期</th>
             <th>收益</th>
-            <th>手续费</th>
             <th>成交量</th>
             <th>总余额</th>
           </tr>
@@ -251,9 +303,9 @@
     </div>
   </main>
   <script>
-    const LABELS = { extended: "Extended", risex: "RISEx", decibel: "Decibel", n1: "N1", phoenix: "Phoenix" };
-    const COLORS = { extended: "#58a6ff", risex: "#3fb950", decibel: "#d29922", n1: "#39c5cf", phoenix: "#f78166" };
-    const ORDER = ["extended", "risex", "decibel", "n1", "phoenix"];
+    const LABELS = { extended: "Extended", risex: "RISEx", decibel: "Decibel", n1: "N1", phoenix: "Phoenix", phoenix2: "ph2号", nado: "Nado", popdex: "PopDEX" };
+    const COLORS = { extended: "#58a6ff", risex: "#3fb950", decibel: "#d29922", n1: "#39c5cf", phoenix: "#f78166", phoenix2: "#ff9f6b", nado: "#a371f7", popdex: "#e85d75" };
+    const ORDER = ["extended", "risex", "decibel", "n1", "phoenix", "phoenix2"];
 
     function el(id) { return document.getElementById(id); }
     function setText(id, text, className) {
@@ -338,20 +390,30 @@
       const maxGap = gaps.length ? Math.max(...gaps) : 0;
       const baseGap = expectGap > 0 ? expectGap : avgGap;
       const holeThresh = baseGap > 0 ? baseGap * 1.6 : 0;
+      // 中间 skipBand：买卖跨 mid 的 ~2 格跳空是设计预期，不算缺档空洞
+      const midSkipMax = baseGap > 0 ? baseGap * 2.25 : 0;
       let holes = 0;
       let missingEst = 0;
+      let midSkipGap = 0;
       const gapMarks = [];
       if (holeThresh > 0) {
         for (let i = 1; i < uniq.length; i++) {
           const g = uniq[i] - uniq[i - 1];
+          const a = uniq[i - 1];
+          const b = uniq[i];
+          const crossesMid = mid > 0 && a < mid && b > mid;
+          if (crossesMid && midSkipMax > 0 && g <= midSkipMax) {
+            midSkipGap = Math.max(midSkipGap, g);
+            continue;
+          }
           if (g <= holeThresh) continue;
           holes += 1;
           missingEst += Math.max(0, Math.round(g / baseGap) - 1);
-          const left = pctOf(uniq[i - 1]);
-          const right = pctOf(uniq[i]);
+          const left = pctOf(a);
+          const right = pctOf(b);
           const w = Math.max(0.4, right - left);
           gapMarks.push(
-            `<span class="ladder-gap" style="left:${left}%;width:${w}%" title="空洞 ${g.toFixed(1)} · ${price(uniq[i - 1])}→${price(uniq[i])}"></span>`
+            `<span class="ladder-gap" style="left:${left}%;width:${w}%" title="空洞 ${g.toFixed(1)} · ${price(a)}→${price(b)}"></span>`
           );
         }
       }
@@ -359,9 +421,19 @@
       const ticks = uniq
         .map((px) => `<span class="ladder-tick" style="left:${pctOf(px)}%" title="${price(px)}"></span>`)
         .join("");
+      const anchor = n(v.anchorMid);
       const midMark =
         mid > 0
-          ? `<span class="ladder-mid" style="left:${pctOf(mid)}%" title="mid ${price(mid)}"></span>`
+          ? `<span class="ladder-mid" style="left:${pctOf(mid)}%" title="当前价 mid ${price(mid)}"></span>`
+          : "";
+      const near = mid > 0 && anchor > 0 && Math.abs(mid - anchor) / Math.max(mid, 1) < 0.0008;
+      const anchorMark =
+        anchor > 0
+          ? `<span class="ladder-anchor${near ? " near-mid" : ""}" style="left:${pctOf(anchor)}%" title="铺单锚点 ${price(anchor)}"></span>`
+          : "";
+      const driftTxt =
+        mid > 0 && anchor > 0
+          ? `偏锚 ${(((mid - anchor) / anchor) * 100).toFixed(3)}%`
           : "";
 
       let statCls = "ok";
@@ -385,9 +457,15 @@
           <span class="stat ${statCls}">${statText} · ${uniq.length}档</span>
         </div>
         ${uniq.length
-          ? `<div class="ladder-rail">${gapMarks.join("")}${ticks}${midMark}</div>
-        <div class="ladder-axis"><span>${price(lo)}</span><span>mid ${price(mid)}</span><span>${price(hi)}</span></div>
-        <div class="ladder-hint">最大相邻档距 ${maxGap ? maxGap.toFixed(1) : "-"}</div>`
+          ? `<div class="ladder-rail">${gapMarks.join("")}${ticks}${anchorMark}${midMark}</div>
+        <div class="ladder-axis"><span>${price(lo)}</span><span>${price(hi)}</span></div>
+        <div class="ladder-legend">
+          <span><i class="lg-mid"></i>当前价 ${mid > 0 ? price(mid) : "-"}</span>
+          <span><i class="lg-anchor"></i>铺单锚点 ${anchor > 0 ? price(anchor) : "-"}</span>
+          ${driftTxt ? `<span>${driftTxt}</span>` : ""}
+          <span>期望档距 ${expectGap ? expectGap.toFixed(1) : "-"}</span>
+          <span>中间跳空 ${midSkipGap ? midSkipGap.toFixed(1) : (maxGap ? maxGap.toFixed(1) : "-")}${expectGap ? ` (≈2×${expectGap.toFixed(0)})` : ""}</span>
+        </div>`
           : `<div class="ladder-empty">暂无挂单明细</div>`}
       </div>`;
     }
@@ -396,6 +474,10 @@
       const venues = Array.isArray(data.venues) ? data.venues.slice() : [];
       const byId = {};
       for (const v of venues) byId[v.venue] = v;
+      const orderList = ORDER.slice();
+      for (const v of venues) {
+        if (v && v.venue && !orderList.includes(v.venue)) orderList.push(v.venue);
+      }
       const oo = venues.reduce((s, v) => s + n(v.openOrders), 0);
       const exp = venues.reduce((s, v) => s + expectOo(v), 0);
       const healthy = venues.filter((v) => statusOf(v) === "ok").length;
@@ -405,31 +487,45 @@
       const todayRow = cal.find((r) => r.day === ledger.dayKey) || cal[0];
       const off = data.official || {};
       const offVenues = off.venues || {};
-      let offVol = 0, offFees = 0, offPnl = 0, offVolN = 0, offFeeN = 0, offPnlN = 0;
-      for (const id of ORDER) {
+      let offVol = 0, offVolN = 0;
+      for (const id of orderList) {
         const o = offVenues[id];
         if (!o || o.source !== "official") continue;
         if (o.volume != null && Number.isFinite(Number(o.volume))) { offVol += Number(o.volume); offVolN++; }
-        if (o.fees != null && Number.isFinite(Number(o.fees))) { offFees += Number(o.fees); offFeeN++; }
-        if (o.realizedPnl != null && Number.isFinite(Number(o.realizedPnl))) { offPnl += Number(o.realizedPnl); offPnlN++; }
       }
       const venueEquity = venues.reduce((s, v) => s + n(v.equityUsd), 0);
       const equityKnown = venues.filter((v) => v.equityUsd != null && Number(v.equityUsd) > 0).length;
       const ledgerEquity = todayRow ? n(todayRow.equity) : 0;
       const todayEquity = venueEquity > 0 ? venueEquity : ledgerEquity;
-      const readyN = Math.min(offVolN, offFeeN, offPnlN);
 
       const equityDayPnl = todayRow != null && Number.isFinite(Number(todayRow.dayProfit))
         ? Number(todayRow.dayProfit)
         : null;
       setText("mode", data.dryRun ? "DRY_RUN" : "LIVE", "pill " + (data.dryRun ? "dry" : "live"));
-      setText("offPill", readyN === ORDER.length ? "数据齐全" : `数据 ${readyN}/${ORDER.length}`, "pill " + (readyN === ORDER.length ? "offok" : "dry"));
+      const paused = !!data.paused;
+      const pausePill = el("pausePill");
+      const btnPause = el("btnPause");
+      const btnResume = el("btnResume");
+      const pauseBanner = el("pauseBanner");
+      if (pausePill) {
+        pausePill.style.display = paused ? "inline-block" : "none";
+        if (paused) setText("pausePill", "暂停中", "pill paused");
+      }
+      if (btnPause) btnPause.style.display = paused ? "none" : "inline-block";
+      if (btnResume) btnResume.style.display = paused ? "inline-block" : "none";
+      if (pauseBanner) {
+        pauseBanner.className = "pause-banner" + (paused ? " on" : "");
+        if (paused && data.pausedAt) {
+          pauseBanner.textContent =
+            "紧急暂停中（" + new Date(data.pausedAt).toLocaleString("zh-CN") +
+            "）：机器人已停止下单/撤单/补单。请自行到各所撤单/平仓；完成后再点「恢复运行」。";
+        }
+      }
+      setText("offPill", offVolN === orderList.length ? "数据齐全" : `数据 ${offVolN}/${orderList.length}`, "pill " + (offVolN === orderList.length ? "offok" : "dry"));
       setText("kEquity", todayEquity > 0 ? usd(todayEquity) : "-");
-      setText("kEquitySub", equityKnown ? `${equityKnown}/${venues.length || ORDER.length} 所有读数` : "各所权益合计");
+      setText("kEquitySub", equityKnown ? `${equityKnown}/${venues.length || orderList.length} 所有读数` : "各所权益合计");
       setText("kVol", offVolN > 0 ? usdShort(offVol) : "-");
-      setText("kVolSub", offVolN ? `官方 ${offVolN} 所 · ${off.dayKey || ""}` : "暂无");
-      setText("kFees", offFeeN > 0 ? usd(offFees) : "-", "value");
-      setText("kFeesSub", offFeeN ? `${offFeeN} 所合计 · ${off.dayKey || ""}` : "暂无");
+      setText("kVolSub", offVolN ? `${offVolN} 所合计` : "暂无");
       setText(
         "kOffPnl",
         equityDayPnl != null ? signed(equityDayPnl) : "-",
@@ -443,15 +539,13 @@
       );
       setText("kOrders", String(oo));
       setText("kOrdersSub", `open ${oo} / 期望≈${exp}`);
-      setText("kHealth", `${healthy}/${venues.length || ORDER.length}`, "value " + (healthy === venues.length ? "up" : "warn"));
+      setText("kHealth", `${healthy}/${venues.length || orderList.length}`, "value " + (healthy === venues.length ? "up" : "warn"));
       setText("kHealthSub", healthy === venues.length ? "各所正常" : "有所异常或未铺满");
 
-      el("venueRows").innerHTML = ORDER.map((id) => {
+      el("venueRows").innerHTML = orderList.map((id) => {
         const v = byId[id];
-        const o = offVenues[id] || {};
-        const okOff = o.source === "official";
         if (!v) {
-          return `<tr><td>${LABELS[id]}</td><td colspan="14" class="meta">暂无数据</td></tr>`;
+          return `<tr><td>${LABELS[id] || id}</td><td colspan="11" class="meta">暂无数据</td></tr>`;
         }
         const st = statusOf(v);
         const expOo = expectOo(v);
@@ -459,40 +553,26 @@
         const sideCls = side === "多" ? "up" : side === "空" ? "down" : "";
         const posU = Math.abs(n(v.position) * n(v.mid));
         const posULabel = n(v.mid) > 0 ? usd(posU) : "-";
-        const liq =
-          v.liquidationPrice != null && Number.isFinite(n(v.liquidationPrice)) && n(v.liquidationPrice) > 0
-            ? price(v.liquidationPrice)
-            : "-";
-        const midN = n(v.mid);
-        const liqN = n(v.liquidationPrice);
-        let liqCls = "";
-        if (liq !== "-" && midN > 0 && liqN > 0) {
-          const gapPct = Math.abs(midN - liqN) / midN;
-          if (gapPct < 0.03) liqCls = "down";
-          else if (gapPct < 0.06) liqCls = "warn";
-        }
+        const o = offVenues[id] || {};
+        const volOk = o.source === "official" && o.volume != null && Number.isFinite(Number(o.volume));
         return `<tr>
-          <td><span style="color:${COLORS[id]}">●</span> ${LABELS[id]}</td>
+          <td><span style="color:${COLORS[id] || "#8b949e"}">●</span> ${LABELS[id] || id}</td>
           <td><span class="badge ${st}">${statusLabel(st)}</span></td>
           <td class="${sideCls}">${side}</td>
           <td class="${sideCls}">${posULabel}</td>
+          <td>${n(v.completedRungs)}</td>
           <td>${n(v.openOrders)}/${expOo}</td>
           <td>${price(v.mid)}</td>
-          <td class="${liqCls}">${liq}</td>
           <td>${v.equityUsd != null ? usd(v.equityUsd) : "-"}</td>
+          <td>${volOk ? usdShort(o.volume) : "-"}</td>
+          <td>${n(v.gridCount)}</td>
           <td class="${v.unrealizedPnl != null && Number.isFinite(n(v.unrealizedPnl)) ? cls(v.unrealizedPnl) : ""}">${v.unrealizedPnl != null && Number.isFinite(n(v.unrealizedPnl)) ? signed(v.unrealizedPnl) : "-"}</td>
-          <td>${okOff && o.volume != null ? usdShort(o.volume) : "-"}</td>
-          <td>${okOff && o.fees != null ? usd(o.fees) : "-"}</td>
-          <td class="${okOff && o.realizedPnl != null ? cls(o.realizedPnl) : ""}">${okOff && o.realizedPnl != null ? signed(o.realizedPnl) : "-"}</td>
-          <td>${o.fills != null ? o.fills : "-"}</td>
-          <td>${n(v.completedRungs)}</td>
-          <td class="meta" style="white-space:normal;max-width:160px">${v.lastError || (v.seeded ? "运行中" : "待铺")}</td>
+          <td class="meta" style="white-space:normal;max-width:200px">${v.lastError || (paused ? "已暂停（可手动撤单/平仓）" : (v.seeded ? "运行中" : "待铺"))}</td>
         </tr>`;
       }).join("") + (() => {
-        let posU = 0, rungs = 0, ooSum = 0, expSum = 0, eq = 0, eqN = 0, upnl = 0, upnlN = 0, okN = 0, knownN = 0, fills = 0, fillN = 0;
-        for (const id of ORDER) {
+        let posU = 0, rungs = 0, ooSum = 0, expSum = 0, eq = 0, eqN = 0, grids = 0, upnl = 0, upnlN = 0, okN = 0, knownN = 0;
+        for (const id of orderList) {
           const v = byId[id];
-          const o = offVenues[id] || {};
           if (!v) continue;
           knownN++;
           if (statusOf(v) === "ok") okN++;
@@ -500,74 +580,63 @@
           rungs += n(v.completedRungs);
           ooSum += n(v.openOrders);
           expSum += expectOo(v);
+          grids += n(v.gridCount);
           if (v.equityUsd != null && Number.isFinite(n(v.equityUsd))) { eq += n(v.equityUsd); eqN++; }
           if (v.unrealizedPnl != null && Number.isFinite(n(v.unrealizedPnl))) { upnl += n(v.unrealizedPnl); upnlN++; }
-          if (o.fills != null && Number.isFinite(Number(o.fills))) { fills += Number(o.fills); fillN++; }
         }
         return `<tr style="background:var(--panel2);font-weight:700">
           <td>合计</td>
           <td>${knownN ? `${okN}/${knownN}` : "-"}</td>
           <td class="meta">—</td>
           <td>${posU > 0 ? usd(posU) : "-"}</td>
+          <td>${rungs}</td>
           <td>${ooSum}/${expSum}</td>
           <td class="meta">—</td>
-          <td class="meta">—</td>
           <td>${eqN ? usd(eq) : "-"}</td>
-          <td class="${upnlN ? cls(upnl) : ""}">${upnlN ? signed(upnl) : "-"}</td>
           <td>${offVolN ? usdShort(offVol) : "-"}</td>
-          <td>${offFeeN ? usd(offFees) : "-"}</td>
-          <td class="${offPnlN ? cls(offPnl) : ""}">${offPnlN ? signed(offPnl) : "-"}</td>
-          <td>${fillN ? fills : "-"}</td>
-          <td>${rungs}</td>
-          <td class="meta">${upnlN ? `浮盈亏 ${upnlN} 所` : ""}</td>
+          <td>${grids || "-"}</td>
+          <td class="${upnlN ? cls(upnl) : ""}">${upnlN ? signed(upnl) : "-"}</td>
+          <td class="meta">${upnlN ? `浮盈亏 ${upnlN} 所有数` : "浮盈亏暂无"}</td>
         </tr>`;
       })();
 
-      // 旧 offRows 节点若还在 DOM 则忽略（已合并进 venueRows）
-      const offEl = el("offRows");
-      if (offEl) offEl.innerHTML = "";
-
       const ladders = el("venueLadders");
       if (ladders) {
-        ladders.innerHTML = ORDER.map((id) => {
+        ladders.innerHTML = orderList.map((id) => {
           const v = byId[id];
           if (!v) {
-            return `<div class="ladder"><div class="ladder-head"><span class="name">${LABELS[id]}</span></div><div class="ladder-empty">暂无数据</div></div>`;
+            return `<div class="ladder"><div class="ladder-head"><span class="name">${LABELS[id] || id}</span></div><div class="ladder-empty">暂无数据</div></div>`;
           }
           return renderLadder(v, id);
         }).join("");
       }
 
       const meta = el("calMeta");
-      if (meta) meta.textContent = `记账日 ${ledger.dayKey || "-"} · 成交量优先官方（日切固化）`;
+      if (meta) meta.textContent = `记账日 ${ledger.dayKey || "-"}`;
       const calBody = el("calendarRows");
       if (!cal.length) {
-        calBody.innerHTML = '<tr><td colspan="5" class="meta">暂无每日记录</td></tr>';
+        calBody.innerHTML = '<tr><td colspan="4" class="meta">暂无每日记录</td></tr>';
       } else {
-        let sumPnl = 0, sumFee = 0, sumVol = 0, pnlN = 0, feeN = 0, volN = 0;
+        let sumPnl = 0, sumVol = 0, pnlN = 0, volN = 0;
         const latestEquity = n((cal.find((r) => r.day === ledger.dayKey) || cal[0] || {}).equity);
         const rows = cal.map((r) => {
           const isToday = r.day === ledger.dayKey;
           const bal = n(r.equity);
           const pnl = Number.isFinite(Number(r.dayProfit)) ? Number(r.dayProfit) : null;
-          // 手续费/量：今日用实时官方；历史优先账本固化的官方，否则网格估算
-          const fee = isToday && offFeeN > 0
-            ? offFees
-            : (r.officialFees != null && Number.isFinite(Number(r.officialFees))
-              ? Number(r.officialFees)
-              : null);
-          const vol = isToday && offVolN > 0
-            ? offVol
-            : (r.officialVolume != null && Number.isFinite(Number(r.officialVolume)) && Number(r.officialVolume) > 0
-              ? Number(r.officialVolume)
-              : (n(r.todayVolume) > 0 ? n(r.todayVolume) : null));
+          const vol =
+            isToday && offVolN > 0
+              ? offVol
+              : (r.officialVolume != null && Number.isFinite(Number(r.officialVolume))
+                  ? Number(r.officialVolume)
+                  : (r.volume != null && Number.isFinite(Number(r.volume))
+                      ? Number(r.volume)
+                      : null));
+          // 禁止用本地 todayVolume 估算充数（即便旧字段残留）
           if (pnl != null) { sumPnl += pnl; pnlN++; }
-          if (fee != null) { sumFee += fee; feeN++; }
           if (vol != null) { sumVol += vol; volN++; }
           return `<tr>
             <td>${r.day}${isToday ? "（今天）" : ""}</td>
             <td class="${pnl != null ? cls(pnl) : ""}">${pnl != null ? signed(pnl) : "-"}</td>
-            <td>${fee != null ? usd(fee) : "-"}</td>
             <td>${vol != null ? usdShort(vol) : "-"}</td>
             <td>${bal > 0 ? usd(bal) : "-"}</td>
           </tr>`;
@@ -575,7 +644,6 @@
         calBody.innerHTML = rows + `<tr style="background:var(--panel2);font-weight:700">
           <td>总计</td>
           <td class="${pnlN ? cls(sumPnl) : ""}">${pnlN ? signed(sumPnl) : "-"}</td>
-          <td>${feeN ? usd(sumFee) : "-"}</td>
           <td>${volN ? usdShort(sumVol) : "-"}</td>
           <td>${latestEquity > 0 ? usd(latestEquity) : "-"}</td>
         </tr>`;
@@ -604,6 +672,35 @@
         el("time").textContent = "读取失败: " + (e && e.message ? e.message : e);
       }
     }
+
+    async function setPaused(paused) {
+      const btn = paused ? el("btnPause") : el("btnResume");
+      if (btn) btn.disabled = true;
+      try {
+        const r = await fetch(paused ? "/api/pause" : "/api/resume", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason: "dashboard-ui" }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || j.ok === false) throw new Error(j.error || ("HTTP " + r.status));
+        await poll();
+      } catch (e) {
+        alert((paused ? "暂停失败：" : "恢复失败：") + (e && e.message ? e.message : e));
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    el("btnPause").addEventListener("click", () => {
+      if (!confirm("确认紧急暂停？\n\n机器人将立刻停止一切下单 / 撤单 / 补单。\n挂单与仓位不会自动处理，请你自己去各所手动撤单、平仓。")) return;
+      void setPaused(true);
+    });
+    el("btnResume").addEventListener("click", () => {
+      if (!confirm("确认恢复运行？\n\n机器人将重新开始自动补单/铺网格。\n若你已手动清仓撤单，恢复后可能会按当前锚点重新挂单。")) return;
+      void setPaused(false);
+    });
+
     poll();
     setInterval(poll, 3000);
   </script>

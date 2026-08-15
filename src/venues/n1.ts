@@ -95,6 +95,25 @@ export class N1Executor implements VenueExecutor {
       return { venue: this.id, market, mid: 100_000, position: 0, openOrders: [] };
     }
     this.ensure();
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await this.snapshotOnce(market);
+      } catch (e) {
+        lastErr = e;
+        const msg = String((e as any)?.message || e);
+        const retryable =
+          /fetch failed|ECONNRESET|ETIMEDOUT|ECONNREFUSED|socket hang up|UND_ERR|internal assertion violation|429|Too Many|rate.?limit/i.test(
+            msg
+          );
+        if (!retryable || attempt === 1) throw e;
+        await new Promise((r) => setTimeout(r, 350));
+      }
+    }
+    throw lastErr;
+  }
+
+  private async snapshotOnce(market: string): Promise<VenueSnapshot> {
     await this.user.fetchInfo();
     const marketStats = await this.nord.getMarketStats({ marketId: MARKET_ID });
     const accountKey = String(this.accountId);
