@@ -20,7 +20,7 @@
 | **RISEx** | https://rise.trade/（暂无推荐码） |
 | **Decibel** | https://app.decibel.trade/r/K7B2QM |
 | **N1** | https://app.n1.xyz/r/orderly-loop-curve |
-| **Phoenix / Phoenix2** | https://phoenix.trade/?code=YNS0TXV0 |
+| **Phoenix / Phoenix2** | https://phoenix.trade/?code=35D5NJH3 |
 | **Nado** | https://app.nado.xyz?join=aiqiang888 |
 | **PopDEX** | https://app.popdex.xyz/referral?referralCode=AIQIANG |
 
