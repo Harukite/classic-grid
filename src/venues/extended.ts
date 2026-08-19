@@ -238,12 +238,12 @@ export class ExtendedExecutor implements VenueExecutor {
     await ex.confirmNoOpenOrders(marketId, { retries: 8, waitMs: 750 });
   }
 
-  async closePosition(market: string): Promise<void> {
+  async closePosition(market: string, sizeBase?: number | null): Promise<void> {
     if (this.dryRun) {
-      console.log(`[extended:dry] closePosition ${market}`);
+      console.log(`[extended:dry] closePosition ${market}${sizeBase != null ? ` size=${sizeBase}` : ""}`);
       return;
     }
     const ex = this.ensure();
-    await ex.closePosition(this.marketId(market));
+    await ex.closePosition(this.marketId(market), sizeBase ?? null);
   }
 }

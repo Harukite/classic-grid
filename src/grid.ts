@@ -241,20 +241,36 @@ export function planFromFillsAndSeed(p: {
   const intents: Intent[] = [];
   const orphanCancels: string[] = [];
 
+  // 按 level 分组；同 level 多单（叠单）时确定性保留 orderId 最小的一个，
+  // 撤其余。不依赖 openOrders 数组顺序，避免 indexer 顺序抖动导致「撤A保B」与「撤B保A」交替震荡。
+  const byLevel = new Map<number, LiveOrder[]>();
   for (const o of p.openOrders) {
     const idx = matchLevelIndex(o.price, p.levels, p.spacing);
-    // 对不上当前格线，或同档已有单 → 视为错位/叠单，撤掉腾名额
-    if (idx < 0 || occupied.has(idx)) {
+    // 对不上当前格线 → 错位单，撤掉腾名额
+    if (idx < 0) {
       orphanCancels.push(o.id);
       continue;
     }
+    const arr = byLevel.get(idx) || [];
+    arr.push(o);
+    byLevel.set(idx, arr);
+  }
+  for (const [idx, arr] of byLevel) {
+    let keep = arr[0]!;
+    for (const o of arr) {
+      if (String(o.id) < String(keep.id)) keep = o;
+    }
     occupied.add(idx);
-    nextActive.set(o.id, {
+    nextActive.set(keep.id, {
       levelIndex: idx,
-      side: o.side,
-      price: o.price,
-      size: o.size,
+      side: keep.side,
+      price: keep.price,
+      size: keep.size,
     });
+    for (const o of arr) {
+      if (o.id === keep.id) continue;
+      orphanCancels.push(o.id);
+    }
   }
 
   for (const id of orphanCancels) {
@@ -296,6 +312,10 @@ export function planFromFillsAndSeed(p: {
     const repl = replacementFor(f, p.levels, p.mode);
     if (!repl) continue;
     completedRungs += 1;
+    // 单边锁：long 只买（买成交不补卖）；short 只卖（卖成交不补买）
+    // 否则撤掉单边后会因「成交补反向单」重新挂出反向单，违背「只留单边」意图
+    if (p.mode === "long" && repl.side === "sell") continue;
+    if (p.mode === "short" && repl.side === "buy") continue;
     if (occupied.has(repl.levelIndex)) continue;
     if (
       !pushPlace({

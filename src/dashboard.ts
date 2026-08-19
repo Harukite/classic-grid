@@ -12,12 +12,20 @@ import {
   trimLedgerCalendar,
 } from "./ledger.js";
 import type { OfficialBundle } from "./officialStats.js";
+import type { VenueId } from "./types.js";
 import {
   getBotPauseState,
   loadBotPauseState,
   setBotPaused,
   type BotPauseState,
 } from "./botControl.js";
+import {
+  allVenueControl,
+  enqueueVenueCommand,
+  getPendingCommands,
+  loadVenueControl,
+  type VenueControlAction,
+} from "./venueControl.js";
 
 export type DashboardVenueRow = {
   venue: string;
@@ -64,6 +72,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.resolve(__dirname, "..", "public");
 
 loadBotPauseState();
+loadVenueControl();
 
 let snapshot: DashboardSnapshot = {
   startedAt: new Date().toISOString(),
@@ -177,6 +186,10 @@ export function startDashboardServer(port: number): http.Server | null {
       const body = {
         ...snapshot,
         ledger: ledgerPublicView(loadLedger()),
+        venueControl: {
+          venues: allVenueControl(),
+          pending: getPendingCommands(),
+        },
       };
       res.writeHead(200, {
         "Content-Type": "application/json; charset=utf-8",
@@ -223,6 +236,75 @@ export function startDashboardServer(port: number): http.Server | null {
           "Cache-Control": "no-store",
         });
         res.end(JSON.stringify({ ok: true, ...st }));
+      });
+      return;
+    }
+    if (url === "/api/venue-control" && req.method === "GET") {
+      const body = {
+        venues: allVenueControl(),
+        pending: getPendingCommands(),
+      };
+      res.writeHead(200, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "no-store",
+      });
+      res.end(JSON.stringify(body));
+      return;
+    }
+    if (url === "/api/venue-control" && req.method === "POST") {
+      const chunks: Buffer[] = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", () => {
+        try {
+          const raw = Buffer.concat(chunks).toString("utf8") || "{}";
+          const j = JSON.parse(raw);
+          const venue = String(j?.venue || "").trim();
+          const action = String(j?.action || "").trim() as VenueControlAction;
+          const actions: VenueControlAction[] = [
+            "cancel-sells",
+            "cancel-buys",
+            "close-half",
+            "pause",
+            "resume",
+            "flat-reseed",
+          ];
+          const validVenues = [
+            "extended",
+            "risex",
+            "decibel",
+            "n1",
+            "phoenix",
+            "phoenix2",
+            "nado",
+            "popdex",
+          ];
+          if (!venue || !validVenues.includes(venue) || !actions.includes(action)) {
+            res.writeHead(400, {
+              "Content-Type": "application/json; charset=utf-8",
+            });
+            res.end(
+              JSON.stringify({
+                ok: false,
+                error: `非法参数 venue=${venue} action=${action}`,
+              })
+            );
+            return;
+          }
+          const cmd = enqueueVenueCommand(venue as VenueId, action);
+          res.writeHead(200, {
+            "Content-Type": "application/json; charset=utf-8",
+            "Cache-Control": "no-store",
+          });
+          res.end(JSON.stringify({ ok: true, command: cmd }));
+        } catch (e: any) {
+          res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+          res.end(
+            JSON.stringify({
+              ok: false,
+              error: String(e?.message || e).slice(0, 240),
+            })
+          );
+        }
       });
       return;
     }

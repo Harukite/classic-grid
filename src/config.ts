@@ -1,4 +1,4 @@
-import type { GridParams, VenueId } from "./types.js";
+import type { GridMode, GridParams, VenueId } from "./types.js";
 import { loadEnv } from "./loadEnv.js";
 
 /**
@@ -281,6 +281,16 @@ export function loadRuntimeConfig(): RuntimeConfig {
       leverage: venueLev,
       // Phoenix maker 更低；Nado / N1 / Decibel / PopDEX 按所 maker 档
       ...(v === "phoenix" || v === "phoenix2" ? { feeRate: 0.00005 } : {}),
+      // Phoenix 两所可临时切单边（PHOENIX_MODE=long 只留下方买单，撤上方卖单不加空）
+      ...(v === "phoenix" || v === "phoenix2"
+        ? {
+            mode: (
+              process.env.PHOENIX_MODE === "long" || process.env.PHOENIX_MODE === "short"
+                ? process.env.PHOENIX_MODE
+                : "neutral"
+            ) as GridMode,
+          }
+        : {}),
       ...(v === "nado" || v === "n1" ? { feeRate: 0.0001 } : {}),
       ...(v === "popdex" ? { feeRate: 0.00012 } : {}),
       ...(v === "decibel" ? { feeRate: 0.00011 } : {}),

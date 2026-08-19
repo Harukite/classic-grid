@@ -14,6 +14,13 @@ import {
 } from "./dashboard.js";
 import { isBotPaused, loadBotPauseState } from "./botControl.js";
 import {
+  loadVenueControl,
+  venueHoldSide,
+  isVenuePaused,
+  takePendingCommands,
+  setVenueControl,
+} from "./venueControl.js";
+import {
   assertFeeOk,
   assertMarginOk,
   buildGrid,
@@ -120,13 +127,10 @@ function syncInventory(rt: VenueRuntime, position: number, mid: number): number 
     if (prev === 0) {
       rt.invCost = position * mid;
     } else if (Math.sign(position) !== Math.sign(prev) && Math.abs(position) > 1e-12) {
-      // 翻向：剩余新方向按现价建仓
       rt.invCost = position * mid;
     } else if (Math.abs(position) > Math.abs(prev) + 1e-12) {
-      // 加仓
       rt.invCost += d * mid;
     } else {
-      // 减仓：保留均价
       const avg = prev !== 0 ? rt.invCost / prev : mid;
       rt.invCost = position * avg;
     }
@@ -138,6 +142,110 @@ function syncInventory(rt: VenueRuntime, position: number, mid: number): number 
     rt.unrealizedPnl = 0;
   }
   return rt.unrealizedPnl;
+}
+
+/** 执行单所控制命令（由主循环 tick 顺序调用，避免并发下单） */
+async function executeVenueCommands(
+  rt: VenueRuntime,
+  market: string
+): Promise<void> {
+  const cmds = takePendingCommands(rt.ex.id);
+  for (const cmd of cmds) {
+    const tag = `[${rt.ex.id}] venue-control ${cmd.action}`;
+    try {
+      console.log(`${tag} START`);
+      switch (cmd.action) {
+        case "cancel-sells": {
+          const snap = await rt.ex.snapshot(market);
+          const sells = snap.openOrders.filter((o) => o.side === "sell");
+          if (sells.length) {
+            const r = await rt.ex.apply(
+              sells.map((o) => ({
+                type: "cancel" as const,
+                orderId: o.id,
+                market,
+              }))
+            );
+            console.log(`${tag} cancelled=${r.cancelled} failed=${r.failed}`);
+          }
+          setVenueControl(rt.ex.id, { holdSide: "long" });
+          console.log(`${tag} holdSide=long（只留下方买单）`);
+          break;
+        }
+        case "cancel-buys": {
+          const snap = await rt.ex.snapshot(market);
+          const buys = snap.openOrders.filter((o) => o.side === "buy");
+          if (buys.length) {
+            const r = await rt.ex.apply(
+              buys.map((o) => ({
+                type: "cancel" as const,
+                orderId: o.id,
+                market,
+              }))
+            );
+            console.log(`${tag} cancelled=${r.cancelled} failed=${r.failed}`);
+          }
+          setVenueControl(rt.ex.id, { holdSide: "short" });
+          console.log(`${tag} holdSide=short（只留上方卖单）`);
+          break;
+        }
+        case "close-half": {
+          // 仅 Phoenix/Extended 支持部分平仓（closePosition 带 sizeBase）；其它所会忽略参数导致全平，故禁止
+          const partialOk =
+            rt.ex.id === "phoenix" || rt.ex.id === "phoenix2" || rt.ex.id === "extended";
+          if (!partialOk) {
+            const msg = `${tag} 该所不支持部分平仓，已跳过（请用清仓重铺或手动处理）`;
+            console.error(msg);
+            void tgError(rt.ex.id, "venue-control close-half: 该所不支持部分平仓");
+            break;
+          }
+          const snap = await rt.ex.snapshot(market);
+          const abs = Math.abs(snap.position);
+          if (abs > 0) {
+            await (rt.ex as any).closePosition(market, abs / 2);
+            console.log(`${tag} closed half ≈${(abs / 2).toFixed(6)}`);
+          } else {
+            console.log(`${tag} no position`);
+          }
+          break;
+        }
+        case "pause": {
+          setVenueControl(rt.ex.id, { paused: true });
+          console.log(`${tag} paused`);
+          break;
+        }
+        case "resume": {
+          setVenueControl(rt.ex.id, { paused: false, holdSide: "neutral" });
+          console.log(`${tag} resumed（holdSide=neutral）`);
+          break;
+        }
+        case "flat-reseed": {
+          await rt.ex.cancelAll(market);
+          const snap = await rt.ex.snapshot(market);
+          if (Math.abs(snap.position) > 0) {
+            await rt.ex.closePosition(market);
+          }
+          setVenueControl(rt.ex.id, { holdSide: "neutral", paused: false });
+          rt.built = null;
+          rt.params = null;
+          rt.anchorMid = 0;
+          rt.seeded = false;
+          rt.active = new Map();
+          // 清除软启锚点，确保下一 tick 按现价重锚（否则会沿用旧锚点）
+          delete softResumeAnchors[rt.ex.id];
+          console.log(`${tag} flat done, re-anchor at live mid next tick`);
+          break;
+        }
+        default:
+          console.log(`${tag} no-op`);
+      }
+      console.log(`${tag} OK`);
+    } catch (e: any) {
+      const msg = String(e?.message || e).slice(0, 200);
+      console.error(`${tag} FAILED: ${msg}`);
+      void tgError(rt.ex.id, `venue-control ${cmd.action}: ${msg}`);
+    }
+  }
 }
 
 async function ensureAnchored(
@@ -196,8 +304,11 @@ async function tickOne(
   market: string,
   cfg: RuntimeConfig
 ): Promise<void> {
-  // 紧急暂停：只读刷新看板，绝不 apply（不下单/不撤单/不补单）
-  if (isBotPaused()) {
+  // 单所控制命令：每 tick 优先执行（暂停/单边锁之外的瞬时操作）
+  await executeVenueCommands(rt, market);
+
+  // 紧急暂停（全局）或单所暂停：只读刷新看板，绝不 apply
+  if (isBotPaused() || isVenuePaused(rt.ex.id)) {
     if (!rt.params || !rt.built) {
       try {
         await ensureAnchored(rt, market, cfg);
@@ -258,6 +369,9 @@ async function tickOne(
   const { mid, snap } = await ensureAnchored(rt, market, cfg);
   const g = rt.params!;
   const built = rt.built!;
+  // holdSide 单边锁覆盖网格 mode（如只留下方买单）
+  const holdSide = venueHoldSide(rt.ex.id);
+  const effectiveMode = holdSide !== "neutral" ? holdSide : g.mode;
   const posBefore = rt.lastPosition ?? snap.position;
   // 仅维护仓位变化跟踪（开平仓 TG）；浮盈亏看板一律用所方官方字段
   syncInventory(rt, snap.position, snap.mid);
@@ -271,7 +385,7 @@ async function tickOne(
     mid,
     levels: built.levels,
     spacing: built.spacing,
-    mode: g.mode,
+    mode: effectiveMode,
     sizeBase: g.sizeBase,
     openOrders: snap.openOrders,
     prevActive: rt.active,
@@ -385,6 +499,7 @@ export async function runLoop(opts?: { once?: boolean }): Promise<void> {
   assertLiveAllowed(cfg);
   softResumeAnchors = loadSoftResumeAnchors();
   loadBotPauseState();
+  loadVenueControl();
   if (isBotPaused()) {
     console.warn("[bot-control] starting in PAUSED mode（data/bot-paused.json）");
   }
@@ -551,6 +666,19 @@ export async function runLoop(opts?: { once?: boolean }): Promise<void> {
   };
   process.on("SIGINT", () => void stop());
   process.on("SIGTERM", () => void stop());
+
+  // 进程级兜底：单个所的 SDK/RPC 异步异常（如 Solana 429）不应杀死整个进程、
+  // 拖垮其它 6 所。这里只记日志 + TG 告警，绝不下单/撤单/平仓。
+  process.on("uncaughtException", (e: any) => {
+    const msg = String(e?.message || e).slice(0, 300);
+    console.error(`[uncaughtException] ${msg}\n${String(e?.stack || "").slice(0, 1200)}`);
+    void tgError("system", `uncaughtException: ${msg.slice(0, 180)}`).catch(() => {});
+  });
+  process.on("unhandledRejection", (reason: any) => {
+    const msg = String(reason?.message || reason).slice(0, 300);
+    console.error(`[unhandledRejection] ${msg}`);
+    void tgError("system", `unhandledRejection: ${msg.slice(0, 180)}`).catch(() => {});
+  });
 
   do {
     for (const market of cfg.markets) {

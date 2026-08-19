@@ -420,6 +420,11 @@ export class DecibelLive {
     const priceByAddr = new Map<string, any>(
       (priceRows || []).map((p: any) => [String(p.market), p])
     );
+    // 幽灵单过滤：Decibel indexer 会把已成交/已撤的旧单残留（remaining_size 不归零）。
+    // 这些残留单的 unix_ms 是数天前（实测 9~13 天），而正常挂单是近期的。
+    // 用 48 小时阈值过滤陈旧单；误删的远价单会被 seed 立即补回，代价远小于档位永久缺失。
+    const now = Date.now();
+    const GHOST_AGE_MS = 48 * 60 * 60 * 1000;
     const out: Array<{
       orderId: string;
       symbol: string;
@@ -437,6 +442,8 @@ export class DecibelLive {
       if (!items.length) break;
       for (const o of items) {
         if (o.is_tpsl) continue;
+        const unixMs = Number(o.unix_ms || 0);
+        if (unixMs > 0 && now - unixMs > GHOST_AGE_MS) continue;
         const base = this.addrToBase.get(o.market) ?? baseSymbol(String(o.market));
         if (sym && base !== sym) continue;
         const m = this.cfg(base);
